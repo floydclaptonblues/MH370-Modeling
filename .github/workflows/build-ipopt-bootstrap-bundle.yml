@@ -20,11 +20,11 @@ jobs:
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
-          activate-environment: bundle_builder_bootstrap
-          python-version: "3.12"
+          activate-environment: base
           channels: conda-forge
           channel-priority: strict
-          auto-activate-base: false
+          conda-remove-defaults: true
+          auto-activate: false
 
       - name: Build, smoke-test, pack, relocate, and verify bundle
         shell: pwsh
