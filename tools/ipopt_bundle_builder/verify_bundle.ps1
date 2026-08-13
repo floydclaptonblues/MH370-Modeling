@@ -88,7 +88,7 @@ if ($runtime.classification -ne 'MH370_BENCHMARK_RUNTIME_DEPENDENCY_PASS') {
 if ([string]$runtime.dependency_audit_manifest_sha256 -ne $DependencyAuditManifestSha256) {
     throw 'Initial runtime dependency evidence references the wrong dependency-audit manifest SHA-256.'
 }
-if ($runtime.core_version_mismatches.PSObject.Properties.Count -ne 0) {
+if (@($runtime.core_version_mismatches.PSObject.Properties).Count -ne 0) {
     throw 'Initial runtime dependency evidence contains a verified-core version mismatch.'
 }
 
@@ -107,7 +107,7 @@ if (-not $relocationRuntime.original_environment_prefix_not_used) {
 if ([string]$relocationRuntime.dependency_audit_manifest_sha256 -ne $DependencyAuditManifestSha256) {
     throw 'Relocated runtime dependency evidence references the wrong dependency-audit manifest SHA-256.'
 }
-if ($relocationRuntime.core_version_mismatches.PSObject.Properties.Count -ne 0) {
+if (@($relocationRuntime.core_version_mismatches.PSObject.Properties).Count -ne 0) {
     throw 'Relocated runtime dependency evidence contains a verified-core version mismatch.'
 }
 
