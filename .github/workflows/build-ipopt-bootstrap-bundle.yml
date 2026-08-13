@@ -26,6 +26,19 @@ jobs:
           conda-remove-defaults: true
           auto-activate: false
 
+      - name: Expose Miniforge conda executable to PowerShell
+        shell: pwsh
+        run: |
+          if (-not $env:CONDA) {
+            throw 'setup-miniconda did not provide the CONDA installation root.'
+          }
+          $condaExe = Join-Path $env:CONDA 'Scripts\conda.exe'
+          if (-not (Test-Path -LiteralPath $condaExe -PathType Leaf)) {
+            throw "Expected conda.exe was not found at: $condaExe"
+          }
+          (Split-Path -Parent $condaExe) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Output "CONDA_EXE=$condaExe"
+
       - name: Build, smoke-test, pack, relocate, and verify bundle
         shell: pwsh
         env:
