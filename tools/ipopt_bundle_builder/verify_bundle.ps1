@@ -129,6 +129,24 @@ if ([string]$buildEnvironment.benchmark_runtime_dependency_manifest_sha256 -ne $
 if ([string]$buildEnvironment.benchmark_runtime_dependency_gate -ne 'MH370_BENCHMARK_RUNTIME_DEPENDENCY_PASS') {
     throw 'build_environment.json does not record a passing MH370 benchmark runtime dependency gate.'
 }
+$expectedBuildVersions = @{
+    python_version = '3.12.13'
+    numpy_version = '2.5.2'
+    scipy_version = '1.18.0'
+    cyipopt_version = '1.7.0'
+    ipopt_version = '3.14.19'
+}
+foreach ($property in $expectedBuildVersions.Keys) {
+    $observed = [string]$buildEnvironment.$property
+    $expected = [string]$expectedBuildVersions[$property]
+    if ($observed -ne $expected) {
+        throw "Verified numerical-core mismatch in build_environment.json: $property expected $expected observed $observed"
+    }
+}
+$backend = [string]$buildEnvironment.ipopt_linear_solver_backend
+if ($backend -notmatch '(?i)MUMPS\s+5\.8\.2') {
+    throw "Unexpected Ipopt linear solver backend; required MUMPS 5.8.2, observed: $backend"
+}
 
 if ($ZipPath) {
     $zip = (Resolve-Path -LiteralPath $ZipPath).Path
