@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import platform
 import sys
 import traceback
@@ -126,7 +127,8 @@ def main() -> int:
         # Exercise the audited runtime imports, not merely import their top-level modules.
         dataframe_probe = pd.DataFrame({"x": [1, 2]}).shape == (2, 1)
         arrow_probe = pa.table({"x": [1, 2]}).num_rows == 2
-        geod_probe = isinstance(pyproj.Geod(ellps="WGS84").inv(0.0, 0.0, 1.0, 1.0)[2], float)
+        geod_distance = float(pyproj.Geod(ellps="WGS84").inv(0.0, 0.0, 1.0, 1.0)[2])
+        geod_probe = math.isfinite(geod_distance) and geod_distance > 0.0
         yaml_probe = yaml.safe_load("stage: 1") == {"stage": 1}
         pytest_probe = bool(pytest.__version__)
         runtime_probes = {
