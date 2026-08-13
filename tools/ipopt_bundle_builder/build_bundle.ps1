@@ -131,7 +131,9 @@ if (-not (Test-Path -LiteralPath $EnvironmentPython -PathType Leaf)) {
 
 $explicitResult = Invoke-NativeCaptured -FilePath $CondaExe -Arguments @('list', '--name', $EnvironmentName, '--explicit') -StdoutPath (Join-Path $StageDirectory 'conda_explicit.txt') -StderrPath (Join-Path $StageDirectory 'conda_explicit_stderr.txt')
 $listResult = Invoke-NativeCaptured -FilePath $CondaExe -Arguments @('list', '--name', $EnvironmentName, '--json') -StdoutPath (Join-Path $StageDirectory 'conda_list.json') -StderrPath (Join-Path $StageDirectory 'conda_list_stderr.txt')
-$historyResult = Invoke-NativeCaptured -FilePath $CondaExe -Arguments @('env', 'export', '--name', $EnvironmentName, '--from-history') -StdoutPath (Join-Path $StageDirectory 'environment_history.yml') -StderrPath (Join-Path $StageDirectory 'environment_history_stderr.txt')
+# Conda 26's history-only exporter can reject successfully resolved packages (observed with pyarrow).
+# Preserve the established artifact filename for compatibility, but record the full resolved environment instead.
+$historyResult = Invoke-NativeCaptured -FilePath $CondaExe -Arguments @('env', 'export', '--name', $EnvironmentName) -StdoutPath (Join-Path $StageDirectory 'environment_history.yml') -StderrPath (Join-Path $StageDirectory 'environment_history_stderr.txt')
 if (($listResult.Stdout | ConvertFrom-Json).Count -lt 11) {
     throw 'Resolved conda package inventory is unexpectedly incomplete.'
 }
