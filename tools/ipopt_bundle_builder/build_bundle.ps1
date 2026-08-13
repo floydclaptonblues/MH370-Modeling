@@ -57,6 +57,12 @@ function Invoke-NativeCaptured {
     $exitCode = $process.ExitCode
     $process.Dispose()
     if ($exitCode -ne 0) {
+        Write-Host '----- native stdout begin -----'
+        if ($stdout) { Write-Host $stdout }
+        Write-Host '----- native stdout end -----'
+        Write-Host '----- native stderr begin -----'
+        if ($stderr) { Write-Host $stderr }
+        Write-Host '----- native stderr end -----'
         throw "Native process failed with exit code ${exitCode}: $FilePath $($Arguments -join ' ')"
     }
     return [pscustomobject]@{ ExitCode = $exitCode; Stdout = $stdout; Stderr = $stderr }
@@ -130,13 +136,17 @@ Copy-Item -LiteralPath (Join-Path $BuilderRoot 'README_TARGET_RECOVERY.txt') -De
 Copy-Item -LiteralPath (Join-Path $RepositoryRoot '.github\workflows\build-ipopt-bootstrap-bundle.yml') -Destination (Join-Path $StageDirectory 'build-ipopt-bootstrap-bundle.yml')
 
 $SmokeResultPath = Join-Path $StageDirectory 'smoke_test_result.json'
-Invoke-NativeCaptured -FilePath $EnvironmentPython -Arguments @((Join-Path $StageDirectory 'smoke_test.py'), '--result', $SmokeResultPath) -StdoutPath (Join-Path $StageDirectory 'smoke_test_stdout.txt') -StderrPath (Join-Path $StageDirectory 'smoke_test_stderr.txt') | Out-Null
+Invoke-NativeCaptured -FilePath $CondaExe -Arguments @(
+    'run', '--name', $EnvironmentName, 'python',
+    (Join-Path $StageDirectory 'smoke_test.py'), '--result', $SmokeResultPath
+) -StdoutPath (Join-Path $StageDirectory 'smoke_test_stdout.txt') -StderrPath (Join-Path $StageDirectory 'smoke_test_stderr.txt') | Out-Null
 $smokeResult = Get-Content -LiteralPath $SmokeResultPath -Raw | ConvertFrom-Json
 if ($smokeResult.classification -ne 'IPOPT_EXTERNAL_SMOKE_TEST_PASS') {
     throw "Initial Ipopt smoke test failed: $($smokeResult.classification)"
 }
 
-Invoke-NativeCaptured -FilePath $EnvironmentPython -Arguments @(
+Invoke-NativeCaptured -FilePath $CondaExe -Arguments @(
+    'run', '--name', $EnvironmentName, 'python',
     (Join-Path $StageDirectory 'inspect_environment.py'),
     '--conda-list', (Join-Path $StageDirectory 'conda_list.json'),
     '--smoke-result', $SmokeResultPath,
