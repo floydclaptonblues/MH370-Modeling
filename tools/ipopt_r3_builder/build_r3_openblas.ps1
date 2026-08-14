@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 $BuilderRoot = $PSScriptRoot
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $BuilderRoot '..\..')).Path
+. (Join-Path $BuilderRoot 'resolve_builder_commands.ps1')
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $ScientificPayload = [IO.Path]::GetFullPath($ScientificPayload)
 $Specs = @(
@@ -82,12 +83,10 @@ if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or -not $env:GI
 if (-not $env:RUNNER_TEMP) { throw 'RUNNER_TEMP is missing.' }
 if (-not (Test-Path -LiteralPath $ScientificPayload -PathType Leaf)) { throw "Scientific payload missing: $ScientificPayload" }
 if (Test-Path -LiteralPath $OutputDirectory) { throw "Refusing to overwrite output directory: $OutputDirectory" }
+if (-not $env:CONDA -or -not (Test-Path -LiteralPath $env:CONDA -PathType Container)) {
+    throw 'STAGE1B6J_R3_BUILDER_CONDA_PROVENANCE_FAILURE: setup-miniconda CONDA root is missing.'
+}
 
-$CondaExe = (Get-Command conda.exe -ErrorAction Stop).Source
-$BuilderPython = (Get-Command python.exe -ErrorAction Stop).Source
-$CondaPackExe = (Get-Command conda-pack.exe -ErrorAction Stop).Source
-$CmdExe = if ($env:COMSPEC) { $env:COMSPEC } else { (Get-Command cmd.exe -ErrorAction Stop).Source }
-$TarExe = (Get-Command tar.exe -ErrorAction Stop).Source
 $runToken = "$($env:GITHUB_RUN_ID)_$($env:GITHUB_RUN_ATTEMPT)"
 $WorkRoot = Join-Path $env:RUNNER_TEMP "phase4c_stage1b6j_r3_$runToken"
 $Candidate = Join-Path $WorkRoot 'candidate'
@@ -106,6 +105,66 @@ foreach ($path in @($WorkRoot, $OutputDirectory)) {
 }
 New-Item -ItemType Directory -Path $Logs | Out-Null
 New-Item -ItemType Directory -Path $ProbeOutput | Out-Null
+
+$condaCommandDiagnostic = Get-R3CommandDiagnostic -Name 'conda'
+$condaExeCommandDiagnostic = Get-R3CommandDiagnostic -Name 'conda.exe'
+$condaResolution = Select-R3CondaExecutable `
+    -CondaExeEnvironment ([string]$env:CONDA_EXE) `
+    -CondaCommandType ([string]$condaCommandDiagnostic.command_type) `
+    -CondaCommandSource ([string]$condaCommandDiagnostic.source) `
+    -ExpectedRoot $env:CONDA
+$CondaExe = $condaResolution.Path
+
+$expectedBuilderPrefix = if ($env:CONDA_PREFIX) {
+    (Resolve-Path -LiteralPath $env:CONDA_PREFIX -ErrorAction Stop).Path
+} else {
+    Join-Path $env:CONDA 'envs\phase4c_r3_builder'
+}
+if (-not (Test-Path -LiteralPath $expectedBuilderPrefix -PathType Container) -or
+        -not (Test-R3PathUnderRoot -Path $expectedBuilderPrefix -Root $env:CONDA)) {
+    throw "STAGE1B6J_R3_BUILDER_TOOL_PROVENANCE_FAILURE: builder environment is outside setup-miniconda root: $expectedBuilderPrefix"
+}
+$builderPythonResolution = Resolve-R3ApplicationCommand -Name 'python.exe' `
+    -ExplicitPath (Join-Path $expectedBuilderPrefix 'python.exe') `
+    -ExpectedRoot $expectedBuilderPrefix -RequireExpectedRoot
+$condaPackResolution = Resolve-R3ApplicationCommand -Name 'conda-pack.exe' `
+    -ExplicitPath (Join-Path $expectedBuilderPrefix 'Scripts\conda-pack.exe') `
+    -ExpectedRoot $expectedBuilderPrefix -RequireExpectedRoot
+$cmdResolution = Resolve-R3ApplicationCommand -Name 'cmd.exe' -ExplicitPath ([string]$env:COMSPEC) -ExpectedRoot ''
+$tarResolution = Resolve-R3ApplicationCommand -Name 'tar.exe' -ExplicitPath '' -ExpectedRoot ''
+$BuilderPython = $builderPythonResolution.Path
+$CondaPackExe = $condaPackResolution.Path
+$CmdExe = $cmdResolution.Path
+$TarExe = $tarResolution.Path
+
+$condaInfoPath = Join-Path $OutputDirectory 'conda_info.json'
+$resolutionDiagnosticPath = Join-Path $OutputDirectory 'github_builder_command_resolution.json'
+$resolutionDiagnostic = [ordered]@{
+    classification = 'STAGE1B6J_R3_BUILDER_COMMAND_RESOLUTION_PENDING_NATIVE_VALIDATION'
+    conda_environment = [ordered]@{
+        CONDA = $env:CONDA
+        CONDA_EXE = $env:CONDA_EXE
+        CONDA_PREFIX = $env:CONDA_PREFIX
+        CONDA_DEFAULT_ENV = $env:CONDA_DEFAULT_ENV
+    }
+    get_command_conda = $condaCommandDiagnostic
+    get_command_conda_exe = $condaExeCommandDiagnostic
+    resolved_conda = [ordered]@{
+        path = $CondaExe
+        resolution_source = $condaResolution.ResolutionSource
+        expected_setup_miniconda_root = $condaResolution.ExpectedRoot
+    }
+    adjacent_commands = [ordered]@{
+        python = $builderPythonResolution
+        conda_pack = $condaPackResolution
+        cmd = $cmdResolution
+        tar = $tarResolution
+    }
+    conda_version = $null
+    conda_info_json_path = $condaInfoPath
+}
+Write-Utf8NoBom $resolutionDiagnosticPath (($resolutionDiagnostic | ConvertTo-Json -Depth 20) + "`n")
+
 Invoke-NativeCaptured $TarExe @('-xf', $ScientificPayload, '-C', $ScientificRoot) (Join-Path $Logs 'scientific_payload_extract.stdout.txt') (Join-Path $Logs 'scientific_payload_extract.stderr.txt') | Out-Null
 
 $runner = [ordered]@{
@@ -120,7 +179,10 @@ $protectedManifest = Join-Path $ScientificRoot 'provenance\phase4c_stage1b6f_boo
 Invoke-NativeCaptured $BuilderPython @($AuditScript, 'protected', '--root', $ScientificRoot, '--manifest', $protectedManifest, '--output', (Join-Path $OutputDirectory 'github_protected_preflight.json')) (Join-Path $Logs 'protected_preflight.stdout.txt') (Join-Path $Logs 'protected_preflight.stderr.txt') | Out-Null
 
 $condaVersion = Invoke-NativeCaptured $CondaExe @('--version') (Join-Path $Logs 'conda_version.stdout.txt') (Join-Path $Logs 'conda_version.stderr.txt')
-$condaInfo = Invoke-NativeCaptured $CondaExe @('info', '--json') (Join-Path $OutputDirectory 'conda_info.json') (Join-Path $Logs 'conda_info.stderr.txt')
+$condaInfo = Invoke-NativeCaptured $CondaExe @('info', '--json') $condaInfoPath (Join-Path $Logs 'conda_info.stderr.txt')
+$resolutionDiagnostic.classification = 'STAGE1B6J_R3_BUILDER_COMMAND_RESOLUTION_PASS'
+$resolutionDiagnostic.conda_version = $condaVersion.Stdout.Trim()
+Write-Utf8NoBom $resolutionDiagnosticPath (($resolutionDiagnostic | ConvertTo-Json -Depth 20) + "`n")
 $dryRunPath = Join-Path $OutputDirectory 'github_dry_run.json'
 $dryRunArgs = @('create', '--dry-run', '--json', '--strict-channel-priority', '--override-channels', '--channel', 'conda-forge', '--prefix', $Candidate) + $Specs
 $dryRun = Invoke-NativeCaptured $CondaExe $dryRunArgs $dryRunPath (Join-Path $Logs 'github_dry_run.stderr.txt') -AllowFailure

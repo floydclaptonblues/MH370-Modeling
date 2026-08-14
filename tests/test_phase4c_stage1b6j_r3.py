@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +13,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools" / "ipopt_r3_builder"
+COMMAND_RESOLVER = TOOLS / "resolve_builder_commands.ps1"
+POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 sys.path.insert(0, str(TOOLS))
 
 from r3_audit import (  # noqa: E402
@@ -151,3 +156,83 @@ def test_13_reference_evaluator_forbids_optimization() -> None:
 def test_14_protected_529_integrity() -> None:
     result = protected_check(ROOT, ROOT / "provenance" / "phase4c_stage1b6f_bootstrap_input_hashes.json")
     assert result == {"passed": True, "expected": 529, "matched": 529, "failures": []}
+
+
+def invoke_conda_selector(
+    expected_root: Path,
+    conda_exe: Path | None,
+    command_type: str = "",
+    command_source: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    assert POWERSHELL is not None
+    def literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    script = (
+        f". {literal(str(COMMAND_RESOLVER))}; "
+        "$result = Select-R3CondaExecutable "
+        f"-CondaExeEnvironment {literal(str(conda_exe) if conda_exe else '')} "
+        f"-CondaCommandType {literal(command_type)} "
+        f"-CondaCommandSource {literal(str(command_source) if command_source else '')} "
+        f"-ExpectedRoot {literal(str(expected_root))}; "
+        "$result | ConvertTo-Json -Compress"
+    )
+    return subprocess.run(
+        [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_15_valid_conda_exe_does_not_require_literal_conda_exe_lookup(tmp_path: Path) -> None:
+    root = tmp_path / "setup-miniconda"
+    conda = root / "Scripts" / "conda.exe"
+    conda.parent.mkdir(parents=True)
+    conda.write_bytes(b"test")
+    result = invoke_conda_selector(root, conda)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["ResolutionSource"] == "CONDA_EXE"
+
+
+def test_16_valid_conda_exe_is_preferred(tmp_path: Path) -> None:
+    root = tmp_path / "setup-miniconda"
+    preferred = root / "Scripts" / "conda.exe"
+    fallback = root / "condabin" / "conda.exe"
+    preferred.parent.mkdir(parents=True)
+    fallback.parent.mkdir(parents=True)
+    preferred.write_bytes(b"preferred")
+    fallback.write_bytes(b"fallback")
+    result = invoke_conda_selector(root, preferred, "Application", fallback)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert Path(payload["Path"]).resolve() == preferred.resolve()
+    assert payload["ResolutionSource"] == "CONDA_EXE"
+
+
+def test_17_unrelated_conda_executable_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "setup-miniconda"
+    root.mkdir()
+    unrelated = tmp_path / "old-environment" / "conda.exe"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"unrelated")
+    result = invoke_conda_selector(root, unrelated)
+    assert result.returncode != 0
+    assert "STAGE1B6J_R3_BUILDER_CONDA_PROVENANCE_FAILURE" in result.stderr
+
+
+def test_18_missing_conda_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "setup-miniconda"
+    root.mkdir()
+    result = invoke_conda_selector(root, None)
+    assert result.returncode != 0
+    assert "STAGE1B6J_R3_BUILDER_CONDA_COMMAND_RESOLUTION_FAILURE" in result.stderr
+
+
+def test_19_r3_package_specifications_are_unchanged() -> None:
+    text = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    match = re.search(r"\$Specs = @\(.*?\n\)", text, flags=re.DOTALL)
+    assert match is not None
+    normalized = match.group(0).replace("\r\n", "\n").encode()
+    assert hashlib.sha256(normalized).hexdigest() == "dbe2f12bbe5e33a26c638d80ae44577fe5e95c941e096af108f3baae7c8aff81"
+    assert "Get-Command conda.exe -ErrorAction Stop" not in text
