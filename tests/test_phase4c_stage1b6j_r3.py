@@ -14,7 +14,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools" / "ipopt_r3_builder"
 COMMAND_RESOLVER = TOOLS / "resolve_builder_commands.ps1"
+PAYLOAD_GUARD = TOOLS / "scientific_payload_guard.ps1"
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
+WINDOWS_TAR = shutil.which("tar")
 sys.path.insert(0, str(TOOLS))
 
 from r3_audit import (  # noqa: E402
@@ -185,6 +187,17 @@ def invoke_conda_selector(
     )
 
 
+def invoke_payload_guard(script_body: str) -> subprocess.CompletedProcess[str]:
+    assert POWERSHELL is not None
+    guard = "'" + str(PAYLOAD_GUARD).replace("'", "''") + "'"
+    return subprocess.run(
+        [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", f". {guard}; {script_body}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_15_valid_conda_exe_does_not_require_literal_conda_exe_lookup(tmp_path: Path) -> None:
     root = tmp_path / "setup-miniconda"
     conda = root / "Scripts" / "conda.exe"
@@ -236,3 +249,101 @@ def test_19_r3_package_specifications_are_unchanged() -> None:
     normalized = match.group(0).replace("\r\n", "\n").encode()
     assert hashlib.sha256(normalized).hexdigest() == "dbe2f12bbe5e33a26c638d80ae44577fe5e95c941e096af108f3baae7c8aff81"
     assert "Get-Command conda.exe -ErrorAction Stop" not in text
+
+
+def test_20_scientific_root_is_created_before_extraction(tmp_path: Path) -> None:
+    payload = tmp_path / "payload.zip"
+    payload.write_bytes(b"nonempty")
+    scientific_root = tmp_path / "work" / "scientific_payload"
+    result = invoke_payload_guard(
+        f"Get-R3ScientificPayloadRecord -ScientificPayload '{payload}' | Out-Null; "
+        f"New-R3ScientificPayloadExtractionRoot -ScientificRoot '{scientific_root}'; "
+        f"Test-Path -LiteralPath '{scientific_root}' -PathType Container"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True"
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    assert builder.index("New-R3ScientificPayloadExtractionRoot") < builder.index("Invoke-NativeCaptured $TarExe @('-xf'")
+
+
+def test_21_preexisting_scientific_root_fails_closed(tmp_path: Path) -> None:
+    scientific_root = tmp_path / "scientific_payload"
+    scientific_root.mkdir()
+    marker = scientific_root / "existing.txt"
+    marker.write_text("preserve", encoding="utf-8")
+    result = invoke_payload_guard(f"New-R3ScientificPayloadExtractionRoot -ScientificRoot '{scientific_root}'")
+    assert result.returncode != 0
+    assert "Refusing to reuse scientific payload extraction directory" in result.stderr
+    assert marker.read_text(encoding="utf-8") == "preserve"
+
+
+def test_22_missing_scientific_payload_fails_closed(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.zip"
+    result = invoke_payload_guard(f"Get-R3ScientificPayloadRecord -ScientificPayload '{missing}'")
+    assert result.returncode != 0
+    assert "STAGE1B6J_R3_SCIENTIFIC_PAYLOAD_FILE_FAILURE" in result.stderr
+
+
+def test_23_zero_byte_scientific_payload_fails_closed(tmp_path: Path) -> None:
+    payload = tmp_path / "empty.zip"
+    payload.touch()
+    result = invoke_payload_guard(f"Get-R3ScientificPayloadRecord -ScientificPayload '{payload}'")
+    assert result.returncode != 0
+    assert "STAGE1B6J_R3_SCIENTIFIC_PAYLOAD_FILE_FAILURE" in result.stderr
+
+
+def test_24_expected_payload_structure_is_required_after_extraction(tmp_path: Path) -> None:
+    complete = tmp_path / "complete"
+    reference = complete / "tools" / "ipopt_r3_builder" / "scientific_reference_states.json"
+    manifest = complete / "provenance" / "phase4c_stage1b6f_bootstrap_input_hashes.json"
+    reference.parent.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True)
+    reference.write_text("{}", encoding="utf-8")
+    manifest.write_text("{}", encoding="utf-8")
+    passed = invoke_payload_guard(
+        f"Assert-R3ScientificPayloadStructure -ScientificRoot '{complete}' | ConvertTo-Json -Compress"
+    )
+    assert passed.returncode == 0, passed.stderr
+    assert json.loads(passed.stdout)["classification"] == "STAGE1B6J_R3_SCIENTIFIC_PAYLOAD_STRUCTURE_PASS"
+
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    failed = invoke_payload_guard(f"Assert-R3ScientificPayloadStructure -ScientificRoot '{incomplete}'")
+    assert failed.returncode != 0
+    assert "STAGE1B6J_R3_SCIENTIFIC_PAYLOAD_STRUCTURE_FAILURE" in failed.stderr
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    assert builder.index("Invoke-NativeCaptured $TarExe @('-xf'") < builder.index("Assert-R3ScientificPayloadStructure")
+
+
+def test_25_r3_powershell_files_parse_cleanly() -> None:
+    assert POWERSHELL is not None
+    for path in (TOOLS / "build_r3_openblas.ps1", COMMAND_RESOLVER, PAYLOAD_GUARD):
+        quoted = "'" + str(path).replace("'", "''") + "'"
+        script = (
+            "$tokens=$null; $errors=$null; "
+            f"[Management.Automation.Language.Parser]::ParseFile({quoted},[ref]$tokens,[ref]$errors) | Out-Null; "
+            "if ($errors.Count -ne 0) { $errors | ForEach-Object Message; exit 1 }"
+        )
+        result = subprocess.run(
+            [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{path}: {result.stdout}{result.stderr}"
+
+
+def test_26_windows_tar_extracts_existing_payload_when_target_exists(tmp_path: Path) -> None:
+    assert WINDOWS_TAR is not None
+    payload = TOOLS / "phase4c_stage1b6j_r3_scientific_payload.zip"
+    extraction_root = tmp_path / "scientific_payload"
+    extraction_root.mkdir()
+    result = subprocess.run(
+        [WINDOWS_TAR, "-xf", str(payload), "-C", str(extraction_root)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (extraction_root / "tools" / "ipopt_r3_builder" / "scientific_reference_states.json").is_file()
+    assert (extraction_root / "provenance" / "phase4c_stage1b6f_bootstrap_input_hashes.json").is_file()

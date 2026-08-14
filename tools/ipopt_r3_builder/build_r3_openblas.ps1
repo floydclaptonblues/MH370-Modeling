@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 $BuilderRoot = $PSScriptRoot
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $BuilderRoot '..\..')).Path
 . (Join-Path $BuilderRoot 'resolve_builder_commands.ps1')
+. (Join-Path $BuilderRoot 'scientific_payload_guard.ps1')
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $ScientificPayload = [IO.Path]::GetFullPath($ScientificPayload)
 $Specs = @(
@@ -81,7 +82,7 @@ if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or -not $env:GI
     throw 'R3 builder requires a GitHub-hosted Windows x64 runner.'
 }
 if (-not $env:RUNNER_TEMP) { throw 'RUNNER_TEMP is missing.' }
-if (-not (Test-Path -LiteralPath $ScientificPayload -PathType Leaf)) { throw "Scientific payload missing: $ScientificPayload" }
+$payloadRecord = Get-R3ScientificPayloadRecord -ScientificPayload $ScientificPayload
 if (Test-Path -LiteralPath $OutputDirectory) { throw "Refusing to overwrite output directory: $OutputDirectory" }
 if (-not $env:CONDA -or -not (Test-Path -LiteralPath $env:CONDA -PathType Container)) {
     throw 'STAGE1B6J_R3_BUILDER_CONDA_PROVENANCE_FAILURE: setup-miniconda CONDA root is missing.'
@@ -105,6 +106,8 @@ foreach ($path in @($WorkRoot, $OutputDirectory)) {
 }
 New-Item -ItemType Directory -Path $Logs | Out-Null
 New-Item -ItemType Directory -Path $ProbeOutput | Out-Null
+New-R3ScientificPayloadExtractionRoot -ScientificRoot $ScientificRoot
+Write-Utf8NoBom (Join-Path $OutputDirectory 'github_scientific_payload_source.json') (($payloadRecord | ConvertTo-Json -Depth 10) + "`n")
 
 $condaCommandDiagnostic = Get-R3CommandDiagnostic -Name 'conda'
 $condaExeCommandDiagnostic = Get-R3CommandDiagnostic -Name 'conda.exe'
@@ -166,6 +169,8 @@ $resolutionDiagnostic = [ordered]@{
 Write-Utf8NoBom $resolutionDiagnosticPath (($resolutionDiagnostic | ConvertTo-Json -Depth 20) + "`n")
 
 Invoke-NativeCaptured $TarExe @('-xf', $ScientificPayload, '-C', $ScientificRoot) (Join-Path $Logs 'scientific_payload_extract.stdout.txt') (Join-Path $Logs 'scientific_payload_extract.stderr.txt') | Out-Null
+$payloadStructure = Assert-R3ScientificPayloadStructure -ScientificRoot $ScientificRoot
+Write-Utf8NoBom (Join-Path $OutputDirectory 'github_scientific_payload_structure.json') (($payloadStructure | ConvertTo-Json -Depth 10) + "`n")
 
 $runner = [ordered]@{
     repository = $env:GITHUB_REPOSITORY; workflow = $env:GITHUB_WORKFLOW; run_id = $env:GITHUB_RUN_ID
@@ -175,7 +180,7 @@ $runner = [ordered]@{
 }
 Write-Utf8NoBom (Join-Path $OutputDirectory 'github_runner_metadata.json') (($runner | ConvertTo-Json -Depth 10) + "`n")
 
-$protectedManifest = Join-Path $ScientificRoot 'provenance\phase4c_stage1b6f_bootstrap_input_hashes.json'
+$protectedManifest = $payloadStructure.protected_bootstrap_manifest
 Invoke-NativeCaptured $BuilderPython @($AuditScript, 'protected', '--root', $ScientificRoot, '--manifest', $protectedManifest, '--output', (Join-Path $OutputDirectory 'github_protected_preflight.json')) (Join-Path $Logs 'protected_preflight.stdout.txt') (Join-Path $Logs 'protected_preflight.stderr.txt') | Out-Null
 
 $condaVersion = Invoke-NativeCaptured $CondaExe @('--version') (Join-Path $Logs 'conda_version.stdout.txt') (Join-Path $Logs 'conda_version.stderr.txt')
