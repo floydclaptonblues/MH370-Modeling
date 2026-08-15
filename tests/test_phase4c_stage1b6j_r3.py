@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 import shutil
@@ -27,6 +28,7 @@ from r3_audit import (  # noqa: E402
     classify_dry_run,
     compare_plan_receipts,
     dependency_satisfied,
+    plan_rejection_summary,
     plan_records,
     protected_check,
     sha256_file,
@@ -347,3 +349,147 @@ def test_26_windows_tar_extracts_existing_payload_when_target_exists(tmp_path: P
     assert result.returncode == 0, result.stderr
     assert (extraction_root / "tools" / "ipopt_r3_builder" / "scientific_reference_states.json").is_file()
     assert (extraction_root / "provenance" / "phase4c_stage1b6f_bootstrap_input_hashes.json").is_file()
+
+
+def test_27_r3e_plan_acceptance_semantics_are_unchanged() -> None:
+    normalized = inspect.getsource(audit_plan).replace("\r\n", "\n").encode()
+    assert hashlib.sha256(normalized).hexdigest() == "50e9536c2f7a291e0f1fc758d18b96724f07d9d078c07b6fefedf8116d9073c3"
+
+
+def test_28_r3e_summary_identifies_every_failure_gate() -> None:
+    cases: list[tuple[str, dict]] = []
+
+    core = valid_payload()
+    next(row for row in core["actions"]["LINK"] if row["name"] == "numpy")["version"] = "2.5.1"
+    cases.append(("core_version_mismatch", core))
+
+    prohibited = valid_payload()
+    prohibited["actions"]["LINK"].append(package("mkl", "2026.1.0"))
+    cases.append(("prohibited_package", prohibited))
+
+    blas = valid_payload()
+    next(row for row in blas["actions"]["LINK"] if row["name"] == "libblas")["build"] = "0_mkl"
+    cases.append(("blas_variant", blas))
+
+    missing_openblas = valid_payload()
+    rows = [row for row in missing_openblas["actions"]["LINK"] if row["name"] != "libopenblas"]
+    missing_openblas["actions"]["LINK"] = rows
+    missing_openblas["actions"]["FETCH"] = rows
+    cases.append(("libopenblas_missing", missing_openblas))
+
+    scipy = valid_payload()
+    scipy_row = next(row for row in scipy["actions"]["LINK"] if row["name"] == "scipy")
+    scipy_row.update({"build": "pypi_0", "channel": "pypi", "url": ""})
+    cases.append(("scipy_provenance", scipy))
+
+    channel = valid_payload()
+    pytest_row = next(row for row in channel["actions"]["LINK"] if row["name"] == "pytest")
+    pytest_row.update({"channel": "defaults", "url": "https://repo.anaconda.com/pkgs/main/pytest.conda"})
+    cases.append(("non_conda_forge", channel))
+
+    dependency = valid_payload()
+    next(row for row in dependency["actions"]["LINK"] if row["name"] == "numpy")["depends"].append("missing-runtime >=1")
+    cases.append(("dependency_checker", dependency))
+
+    for expected_gate, payload in cases:
+        summary = plan_rejection_summary(audit_plan(payload))
+        assert not summary["passed"]
+        assert summary["classification"] == "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_AUDIT_REJECTED"
+        assert expected_gate in summary["failure_gates"]
+
+    dependency_summary = plan_rejection_summary(audit_plan(dependency))
+    assert dependency_summary["dependency_interpretation_classification"] == (
+        "STAGE1B6J_R3_PACKAGE_AUDITOR_DEPENDENCY_SEMANTICS_MISMATCH_SUSPECTED"
+    )
+    assert dependency_summary["unsatisfied_dependencies"][0]["observed_target"] is None
+
+
+def test_29_r3e_rejected_plan_writes_diagnostics_and_returns_failure(tmp_path: Path) -> None:
+    payload = valid_payload()
+    next(row for row in payload["actions"]["LINK"] if row["name"] == "numpy")["version"] = "2.5.1"
+    dry_run = tmp_path / "dry_run.json"
+    plan = tmp_path / "plan.json"
+    summary = tmp_path / "summary.json"
+    dry_run.write_text(json.dumps(payload), encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "r3_audit.py"),
+            "plan",
+            "--dry-run",
+            str(dry_run),
+            "--output",
+            str(plan),
+            "--rejection-summary",
+            str(summary),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert json.loads(plan.read_text(encoding="utf-8"))["passed"] is False
+    assert json.loads(summary.read_text(encoding="utf-8"))["failure_gates"] == ["core_version_mismatch"]
+
+
+def test_30_r3e_successful_plan_still_passes(tmp_path: Path) -> None:
+    dry_run = tmp_path / "dry_run.json"
+    plan = tmp_path / "plan.json"
+    summary = tmp_path / "summary.json"
+    dry_run.write_text(json.dumps(valid_payload()), encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "r3_audit.py"),
+            "plan",
+            "--dry-run",
+            str(dry_run),
+            "--output",
+            str(plan),
+            "--rejection-summary",
+            str(summary),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(plan.read_text(encoding="utf-8"))["passed"] is True
+    assert not summary.exists()
+
+
+def test_31_r3e_builder_stops_before_candidate_installation() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    plan_start = builder.index("$PackagePlan =")
+    install_start = builder.index("$createArgs =")
+    rejection_block = builder[plan_start:install_start]
+    assert "-AllowFailure" in rejection_block
+    assert "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_AUDIT_REJECTED" in rejection_block
+    assert rejection_block.index("if ($planAudit.ExitCode -ne 0)") < rejection_block.index("throw 'STAGE1B6J")
+    assert plan_start < install_start
+
+
+def test_32_r3e_failure_artifact_contains_only_preinstall_diagnostics() -> None:
+    workflow = (ROOT / ".github/workflows/phase4c-stage1b6j-r3-openblas-runtime.yml").read_text(encoding="utf-8")
+    assert "if: ${{ failure() }}" in workflow
+    assert "phase4c-stage1b6j-r3-package-plan-failure-diagnostics" in workflow
+    for path in (
+        "github_dry_run.json",
+        "github_package_plan.json",
+        "github_package_plan_rejection_summary.json",
+        "conda_info.json",
+        "github_builder_command_resolution.json",
+        "github_scientific_payload_source.json",
+        "github_scientific_payload_structure.json",
+        "github_protected_preflight.json",
+        "logs/github_dry_run.stderr.txt",
+        "logs/plan_audit.stdout.txt",
+        "logs/plan_audit.stderr.txt",
+    ):
+        assert f"phase4c_stage1b6j_r3_artifact/{path}" in workflow
+    failure_step = workflow.split("- name: Upload package-plan failure diagnostics", 1)[1].split(
+        "- name: Upload only the fully validated runtime artifact", 1
+    )[0]
+    assert "installed_conda" not in failure_step
+    assert "runtime.tar.gz" not in failure_step
+

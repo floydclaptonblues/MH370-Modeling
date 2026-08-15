@@ -48,6 +48,26 @@ jobs:
           -OutputDirectory "${{ github.workspace }}\phase4c_stage1b6j_r3_artifact"
           -ScientificPayload "${{ github.workspace }}\tools\ipopt_r3_builder\phase4c_stage1b6j_r3_scientific_payload.zip"
 
+      - name: Upload package-plan failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase4c-stage1b6j-r3-package-plan-failure-diagnostics
+          path: |
+            phase4c_stage1b6j_r3_artifact/github_dry_run.json
+            phase4c_stage1b6j_r3_artifact/github_package_plan.json
+            phase4c_stage1b6j_r3_artifact/github_package_plan_rejection_summary.json
+            phase4c_stage1b6j_r3_artifact/conda_info.json
+            phase4c_stage1b6j_r3_artifact/github_builder_command_resolution.json
+            phase4c_stage1b6j_r3_artifact/github_scientific_payload_source.json
+            phase4c_stage1b6j_r3_artifact/github_scientific_payload_structure.json
+            phase4c_stage1b6j_r3_artifact/github_protected_preflight.json
+            phase4c_stage1b6j_r3_artifact/logs/github_dry_run.stderr.txt
+            phase4c_stage1b6j_r3_artifact/logs/plan_audit.stdout.txt
+            phase4c_stage1b6j_r3_artifact/logs/plan_audit.stderr.txt
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Upload only the fully validated runtime artifact
         if: ${{ success() }}
         id: upload
@@ -63,3 +83,4 @@ jobs:
         if: ${{ success() }}
         shell: pwsh
         run: Write-Output "artifact_digest=${{ steps.upload.outputs.artifact-digest }}"
+

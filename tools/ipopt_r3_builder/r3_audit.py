@@ -226,6 +226,107 @@ def audit_plan(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _package_diagnostic(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "name": row.get("name"),
+        "version": row.get("version"),
+        "build": row.get("build"),
+        "channel": row.get("channel"),
+        "url": row.get("url"),
+    }
+
+
+def plan_rejection_summary(audit: dict[str, Any]) -> dict[str, Any]:
+    packages = {str(row["name"]): row for row in audit.get("packages", [])}
+    core_failures = [
+        {
+            "name": name,
+            "expected": row.get("expected"),
+            "observed": row.get("observed"),
+            "build": row.get("build"),
+            "channel": row.get("channel"),
+            "url": row.get("url"),
+        }
+        for name, row in sorted(audit.get("core_versions", {}).items())
+        if not row.get("passed")
+    ]
+    blas_failures = [
+        {
+            "name": name,
+            "observed_build": row.get("build"),
+            "version": row.get("version"),
+            "url": row.get("url"),
+        }
+        for name, row in sorted(audit.get("blas_family", {}).items())
+        if not row.get("openblas_variant")
+    ]
+    non_conda_forge = [
+        _package_diagnostic(row)
+        for row in audit.get("packages", [])
+        if "conda-forge" not in (str(row.get("channel", "")) + str(row.get("url", ""))).lower()
+    ]
+    openmp_packages = [
+        _package_diagnostic(row) for row in audit.get("openmp_packages", [])
+    ]
+    unsatisfied = []
+    for row in audit.get("unsatisfied_dependencies", []):
+        dependency = str(row.get("dependency", ""))
+        target_name = dependency.split()[0].lower() if dependency.split() else ""
+        unsatisfied.append(
+            {
+                "package": row.get("package"),
+                "dependency": row.get("dependency"),
+                "reason": row.get("reason"),
+                "observed_target": _package_diagnostic(packages.get(target_name)),
+            }
+        )
+
+    failure_gates = []
+    if core_failures:
+        failure_gates.append("core_version_mismatch")
+    if audit.get("prohibited_packages"):
+        failure_gates.append("prohibited_package")
+    if blas_failures:
+        failure_gates.append("blas_variant")
+    if not audit.get("libopenblas"):
+        failure_gates.append("libopenblas_missing")
+    if not audit.get("scipy_genuine_conda_forge_record"):
+        failure_gates.append("scipy_provenance")
+    if not audit.get("all_packages_conda_forge"):
+        failure_gates.append("non_conda_forge")
+    if unsatisfied:
+        failure_gates.append("dependency_checker")
+
+    dependency_only = failure_gates == ["dependency_checker"]
+    return {
+        "classification": (
+            "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_PASS"
+            if audit.get("passed")
+            else "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_AUDIT_REJECTED"
+        ),
+        "passed": bool(audit.get("passed")),
+        "package_count": int(audit.get("package_count", 0)),
+        "failure_gates": failure_gates,
+        "core_version_failures": core_failures,
+        "prohibited_packages": list(audit.get("prohibited_packages", [])),
+        "blas_variant_failures": blas_failures,
+        "libopenblas_present": bool(audit.get("libopenblas")),
+        "scipy_genuine_conda_forge_record": bool(audit.get("scipy_genuine_conda_forge_record")),
+        "all_packages_conda_forge": bool(audit.get("all_packages_conda_forge")),
+        "non_conda_forge_packages": non_conda_forge,
+        "openmp_packages": openmp_packages,
+        "unsatisfied_dependency_count": len(unsatisfied),
+        "unsatisfied_dependencies": unsatisfied,
+        "dependency_interpretation_classification": (
+            "STAGE1B6J_R3_PACKAGE_AUDITOR_DEPENDENCY_SEMANTICS_MISMATCH_SUSPECTED"
+            if dependency_only
+            else None
+        ),
+    }
+
+
 def receipt_records(prefix: Path) -> list[dict[str, Any]]:
     rows = []
     for path in sorted((prefix / "conda-meta").glob("*.json")):
@@ -299,6 +400,8 @@ def command_plan(args: argparse.Namespace) -> int:
     payload = read_json(args.dry_run)
     audit = audit_plan(payload)
     write_json(args.output, audit)
+    if args.rejection_summary is not None and not audit["passed"]:
+        write_json(args.rejection_summary, plan_rejection_summary(audit))
     return 0 if audit["passed"] else 1
 
 
@@ -349,6 +452,7 @@ def parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan")
     plan.add_argument("--dry-run", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
+    plan.add_argument("--rejection-summary", type=Path)
     plan.set_defaults(func=command_plan)
     classify = sub.add_parser("classify")
     classify.add_argument("--dry-run", type=Path, required=True)
@@ -380,3 +484,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

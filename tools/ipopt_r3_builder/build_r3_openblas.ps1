@@ -197,7 +197,28 @@ if ($dryRun.ExitCode -ne 0) {
 }
 
 $PackagePlan = Join-Path $OutputDirectory 'github_package_plan.json'
-Invoke-NativeCaptured $BuilderPython @($AuditScript, 'plan', '--dry-run', $dryRunPath, '--output', $PackagePlan) (Join-Path $Logs 'plan_audit.stdout.txt') (Join-Path $Logs 'plan_audit.stderr.txt') | Out-Null
+$PackagePlanRejectionSummary = Join-Path $OutputDirectory 'github_package_plan_rejection_summary.json'
+$planAudit = Invoke-NativeCaptured `
+    $BuilderPython `
+    @($AuditScript, 'plan', '--dry-run', $dryRunPath, '--output', $PackagePlan, '--rejection-summary', $PackagePlanRejectionSummary) `
+    (Join-Path $Logs 'plan_audit.stdout.txt') `
+    (Join-Path $Logs 'plan_audit.stderr.txt') `
+    -AllowFailure
+if ($planAudit.ExitCode -ne 0) {
+    Copy-Item -LiteralPath $Logs -Destination (Join-Path $OutputDirectory 'logs') -Recurse
+    if (Test-Path -LiteralPath $PackagePlanRejectionSummary -PathType Leaf) {
+        $rejection = Get-Content -LiteralPath $PackagePlanRejectionSummary -Raw | ConvertFrom-Json
+        $compact = [ordered]@{
+            classification = $rejection.classification
+            package_count = $rejection.package_count
+            failure_gates = $rejection.failure_gates
+            unsatisfied_dependency_count = $rejection.unsatisfied_dependency_count
+            dependency_interpretation_classification = $rejection.dependency_interpretation_classification
+        }
+        Write-Output ('R3 package-plan rejection summary: ' + ($compact | ConvertTo-Json -Compress))
+    }
+    throw 'STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_AUDIT_REJECTED'
+}
 
 $createArgs = @('create', '--yes', '--strict-channel-priority', '--override-channels', '--channel', 'conda-forge', '--prefix', $Candidate) + $Specs
 Invoke-NativeCaptured $CondaExe $createArgs (Join-Path $Logs 'environment_creation.stdout.txt') (Join-Path $Logs 'environment_creation.stderr.txt') | Out-Null
@@ -286,3 +307,4 @@ Copy-Item -LiteralPath $Logs -Destination (Join-Path $OutputDirectory 'logs') -R
 Invoke-NativeCaptured $BuilderPython @($AuditScript, 'hash-manifest', '--root', $OutputDirectory, '--output', (Join-Path $OutputDirectory 'sha256_manifest.json')) (Join-Path $WorkRoot 'hash_manifest.stdout.txt') (Join-Path $WorkRoot 'hash_manifest.stderr.txt') | Out-Null
 
 Write-Output 'STAGE1B6J_R3_OPENBLAS_RUNTIME_ARTIFACT_BUILT'
+
