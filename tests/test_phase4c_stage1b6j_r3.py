@@ -25,6 +25,7 @@ from r3_audit import (  # noqa: E402
     audit_dll_resolution,
     audit_ownership,
     audit_plan,
+    canonical_build,
     classify_dry_run,
     compare_plan_receipts,
     dependency_satisfied,
@@ -61,6 +62,53 @@ def valid_payload() -> dict:
         ]
     )
     return {"success": True, "actions": {"LINK": rows, "FETCH": rows}}
+
+
+R3E_CORE_BUILDS = {
+    "python": "hb12b558_1_cpython",
+    "numpy": "py312ha3f287d_0",
+    "scipy": "py312h9b3c559_0",
+    "cyipopt": "py312h478e429_0",
+    "ipopt": "he5a0f77_2",
+    "mumps-seq": "h607cc0b_2",
+    "pandas": "py312h95189c4_1",
+    "pyarrow": "py312h2e8e312_0",
+    "pyproj": "py312h589cc8f_5",
+    "pyyaml": "py312h05f76fc_1",
+    "pytest": "pyhc364b38_2",
+}
+
+
+def r3e_schema_payload() -> dict:
+    versions_and_builds = {
+        **{name: (version, R3E_CORE_BUILDS[name]) for name, version in EXPECTED.items()},
+        "libblas": ("3.11.0", "9_h0adab6e_openblas"),
+        "libcblas": ("3.11.0", "9_h2a8eebe_openblas"),
+        "liblapack": ("3.11.0", "9_hd232482_openblas"),
+        "libopenblas": ("0.3.34", "openmp_hdb726d1_0"),
+        "llvm-openmp": ("22.1.8", "h4fa8253_0"),
+    }
+    dependencies = {
+        "libblas": ["libopenblas >=0.3.34,<1.0a0"],
+        "libcblas": ["libblas 3.11.0 9_h0adab6e_openblas"],
+        "liblapack": ["libblas >=3.11.0,<4.0a0"],
+        "libopenblas": ["llvm-openmp >=22.1.8"],
+    }
+    link = []
+    fetch = []
+    for name, (version, build) in versions_and_builds.items():
+        dist_name = f"{name}-{version}-{build}"
+        link.append(
+            {
+                "name": name,
+                "version": version,
+                "build_string": build,
+                "dist_name": dist_name,
+                "channel": "conda-forge",
+            }
+        )
+        fetch.append(package(name, version, build, dependencies.get(name, [])))
+    return {"success": True, "actions": {"LINK": link, "FETCH": fetch}}
 
 
 def test_01_dry_run_json_parsing() -> None:
@@ -351,9 +399,19 @@ def test_26_windows_tar_extracts_existing_payload_when_target_exists(tmp_path: P
     assert (extraction_root / "provenance" / "phase4c_stage1b6f_bootstrap_input_hashes.json").is_file()
 
 
-def test_27_r3e_plan_acceptance_semantics_are_unchanged() -> None:
-    normalized = inspect.getsource(audit_plan).replace("\r\n", "\n").encode()
-    assert hashlib.sha256(normalized).hexdigest() == "50e9536c2f7a291e0f1fc758d18b96724f07d9d078c07b6fefedf8116d9073c3"
+def test_27_r3e_r3f_plan_acceptance_policy_remains_strict() -> None:
+    source = inspect.getsource(audit_plan)
+    for required_gate in (
+        'str(packages[name].get("version")) == version',
+        "not prohibited",
+        'all(item["openblas_variant"] for item in blas.values())',
+        '"libopenblas" in packages or "libopenblas-ilp64" in packages',
+        "scipy_conda",
+        "all_conda_forge",
+        "dependency_metadata_complete",
+        "not unsatisfied",
+    ):
+        assert required_gate in source
 
 
 def test_28_r3e_summary_identifies_every_failure_gate() -> None:
@@ -492,4 +550,198 @@ def test_32_r3e_failure_artifact_contains_only_preinstall_diagnostics() -> None:
     )[0]
     assert "installed_conda" not in failure_step
     assert "runtime.tar.gz" not in failure_step
+
+
+def test_33_r3f_link_build_string_fetch_build_merge_retains_rich_metadata() -> None:
+    rows = {row["name"]: row for row in plan_records(r3e_schema_payload())}
+    expected = {
+        "libblas": "9_h0adab6e_openblas",
+        "libcblas": "9_h2a8eebe_openblas",
+        "liblapack": "9_hd232482_openblas",
+    }
+    for name, build in expected.items():
+        assert rows[name]["build"] == build
+        assert rows[name]["build_string"] == build
+        assert rows[name]["metadata_source"] == "LINK+FETCH"
+        assert rows[name]["dependency_metadata_available"] is True
+        assert rows[name]["depends"]
+
+
+def test_34_r3f_canonical_build_agreement_and_conflict() -> None:
+    assert canonical_build({"name": "x", "version": "1", "build": "a", "build_string": "a"}) == "a"
+    assert canonical_build({"name": "x", "version": "1", "build_string": "a"}) == "a"
+    with pytest.raises(ValueError, match="STAGE1B6J_R3_CONDA_BUILD_FIELD_CONFLICT"):
+        canonical_build({"name": "x", "version": "1", "build": "a", "build_string": "b"})
+
+    payload = {
+        "actions": {
+            "LINK": [{"name": "x", "version": "1", "build_string": "a"}],
+            "FETCH": [{"name": "x", "version": "1", "build": "b", "depends": []}],
+        }
+    }
+    with pytest.raises(ValueError, match="STAGE1B6J_R3_CONDA_BUILD_FIELD_CONFLICT"):
+        plan_records(payload)
+
+
+def test_35_r3f_link_only_exact_package_cache_enrichment(tmp_path: Path) -> None:
+    cache = tmp_path / "pkgs"
+    dist_name = "cached-1.2.3-habc_0"
+    metadata = cache / dist_name / "info" / "repodata_record.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        json.dumps(
+            {
+                "name": "cached",
+                "version": "1.2.3",
+                "build": "habc_0",
+                "depends": ["python >=3.12"],
+                "channel": "conda-forge",
+                "url": "https://conda.anaconda.org/conda-forge/win-64/cached.conda",
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "actions": {
+            "LINK": [
+                {
+                    "name": "cached",
+                    "version": "1.2.3",
+                    "build_string": "habc_0",
+                    "dist_name": dist_name,
+                }
+            ],
+            "FETCH": [],
+        }
+    }
+    row = plan_records(payload, [cache])[0]
+    assert row["metadata_source"] == "LINK+PACKAGE_CACHE"
+    assert row["package_cache_metadata_kind"] == "REPODATA_RECORD"
+    assert row["dependency_metadata_available"] is True
+    assert row["depends"] == ["python >=3.12"]
+    assert Path(row["package_cache_metadata_path"]).resolve() == metadata.resolve()
+
+
+def test_36_r3f_wrong_package_cache_distribution_is_rejected(tmp_path: Path) -> None:
+    cache = tmp_path / "pkgs"
+    dist_name = "cached-1.2.3-habc_0"
+    metadata = cache / dist_name / "info" / "repodata_record.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        json.dumps({"name": "wrong", "version": "1.2.3", "build": "habc_0", "depends": []}),
+        encoding="utf-8",
+    )
+    payload = {
+        "actions": {
+            "LINK": [
+                {
+                    "name": "cached",
+                    "version": "1.2.3",
+                    "build_string": "habc_0",
+                    "dist_name": dist_name,
+                }
+            ],
+            "FETCH": [],
+        }
+    }
+    row = plan_records(payload, [cache])[0]
+    assert row["metadata_source"] == "LINK_ONLY"
+    assert row["dependency_metadata_available"] is False
+    assert row["depends"] is None
+    assert row["package_cache_rejections"][0]["reason"] == "EXACT_DISTRIBUTION_MISMATCH"
+
+
+def test_37_r3f_missing_dependency_metadata_is_not_an_empty_list() -> None:
+    payload = {
+        "actions": {
+            "LINK": [{"name": "unknown", "version": "1", "build_string": "h0", "dist_name": "unknown-1-h0"}],
+            "FETCH": [],
+        }
+    }
+    row = plan_records(payload)[0]
+    assert row["depends"] is None
+    assert row["dependency_metadata_available"] is False
+    audit = audit_plan(payload)
+    assert audit["classification"] == "STAGE1B6J_R3_PLAN_DEPENDENCY_METADATA_INCOMPLETE"
+    assert audit["dependency_metadata_complete"] is False
+    assert audit["records_total"] == 1
+    assert audit["records_with_dependency_metadata"] == 0
+    assert audit["dependency_checks_total"] == 0
+
+
+def test_38_r3f_dependency_metadata_coverage_is_explicit() -> None:
+    payload = {
+        "actions": {
+            "LINK": [
+                {"name": "known", "version": "1", "build_string": "h0"},
+                {"name": "unknown", "version": "1", "build_string": "h0"},
+            ],
+            "FETCH": [{"name": "known", "version": "1", "build": "h0", "depends": ["unknown >=1"]}],
+        }
+    }
+    audit = audit_plan(payload)
+    assert audit["records_total"] == 2
+    assert audit["records_with_dependency_metadata"] == 1
+    assert audit["dependency_metadata_complete"] is False
+    assert audit["dependency_checks_total"] == 1
+    summary = plan_rejection_summary(audit)
+    assert "dependency_metadata_incomplete" in summary["failure_gates"]
+
+
+def test_39_r3f_r3e_solved_builds_are_generically_normalized() -> None:
+    audit = audit_plan(r3e_schema_payload())
+    assert audit["passed"], audit
+    assert audit["dependency_metadata_complete"] is True
+    assert audit["records_with_dependency_metadata"] == audit["records_total"]
+    for name, build in R3E_CORE_BUILDS.items():
+        assert audit["core_versions"][name]["build"] == build
+    assert audit["blas_family"]["libblas"]["build"] == "9_h0adab6e_openblas"
+    assert audit["blas_family"]["libcblas"]["build"] == "9_h2a8eebe_openblas"
+    assert audit["blas_family"]["liblapack"]["build"] == "9_hd232482_openblas"
+    assert all(row["openblas_variant"] for row in audit["blas_family"].values())
+    packages = {row["name"]: row for row in audit["packages"]}
+    assert packages["libopenblas"]["build"] == "openmp_hdb726d1_0"
+    assert packages["llvm-openmp"]["build"] == "h4fa8253_0"
+    assert not ({"mkl", "mkl-devel", "mkl-service", "intel-openmp"} & packages.keys())
+
+
+def test_40_r3f_link_membership_survives_partial_fetch_with_cache(tmp_path: Path) -> None:
+    cache = tmp_path / "pkgs"
+    link = []
+    fetch = []
+    for index in range(109):
+        name = f"pkg{index:03d}"
+        build = f"h{index:03d}_0"
+        dist_name = f"{name}-1.0-{build}"
+        link.append(
+            {
+                "name": name,
+                "version": "1.0",
+                "build_string": build,
+                "dist_name": dist_name,
+                "channel": "conda-forge",
+            }
+        )
+        if index < 90:
+            fetch.append(package(name, "1.0", build, []))
+        else:
+            metadata = cache / dist_name / "info" / "repodata_record.json"
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "name": name,
+                        "version": "1.0",
+                        "build": build,
+                        "depends": [],
+                        "channel": "conda-forge",
+                    }
+                ),
+                encoding="utf-8",
+            )
+    rows = plan_records({"actions": {"LINK": link, "FETCH": fetch}}, [cache])
+    assert len(rows) == 109
+    assert sum(row["metadata_source"] == "LINK+FETCH" for row in rows) == 90
+    assert sum(row["metadata_source"] == "LINK+PACKAGE_CACHE" for row in rows) == 19
+    assert all(row["dependency_metadata_available"] for row in rows)
 

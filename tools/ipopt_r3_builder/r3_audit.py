@@ -66,22 +66,145 @@ def classify_dry_run(exit_code: int, payload: Any | None, stderr: str) -> str:
     return "STAGE1B6J_OPENBLAS_PLAN_UNSATISFIABLE"
 
 
-def plan_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    actions = payload.get("actions") or {}
-    source = actions.get("LINK") or actions.get("FETCH") or []
-    records: dict[tuple[str, str, str], dict[str, Any]] = {}
-    fetch = {
-        (str(row.get("name", "")).lower(), str(row.get("version", "")), str(row.get("build", ""))): row
-        for row in actions.get("FETCH", [])
+def canonical_build(row: dict[str, Any]) -> str:
+    build = str(row.get("build") or "")
+    build_string = str(row.get("build_string") or "")
+    if build and build_string and build != build_string:
+        raise ValueError(
+            "STAGE1B6J_R3_CONDA_BUILD_FIELD_CONFLICT: "
+            f"build={build!r} build_string={build_string!r} for "
+            f"{row.get('name')} {row.get('version')}"
+        )
+    return build or build_string
+
+
+def _plan_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("name", "")).lower(),
+        str(row.get("version", "")),
+        canonical_build(row),
+    )
+
+
+def _has_metadata_value(value: Any) -> bool:
+    return value is not None and value != "" and value != [] and value != {}
+
+
+def _merge_plan_rows(
+    link: dict[str, Any], rich: dict[str, Any], metadata_source: str
+) -> dict[str, Any]:
+    merged = dict(link)
+    rich_fields = {
+        "depends", "constrains", "url", "sha256", "fn", "license", "track_features",
     }
-    for raw in source:
+    for name, value in rich.items():
+        if name in rich_fields or name not in merged or not _has_metadata_value(merged[name]):
+            merged[name] = value
+    key = _plan_key(link)
+    if _plan_key(rich) != key:
+        raise ValueError(
+            "STAGE1B6J_R3_CONDA_BUILD_FIELD_CONFLICT: "
+            f"LINK and metadata records disagree: LINK={key!r} metadata={_plan_key(rich)!r}"
+        )
+    merged["name"], merged["version"], merged["build"] = key
+    merged["metadata_source"] = metadata_source
+    merged["dependency_metadata_available"] = "depends" in rich
+    merged["depends"] = list(rich.get("depends") or []) if "depends" in rich else None
+    return merged
+
+
+def _exact_package_cache_metadata(
+    link: dict[str, Any], package_cache_dirs: Iterable[Path]
+) -> tuple[dict[str, Any] | None, str | None, list[dict[str, Any]]]:
+    key = _plan_key(link)
+    dist_name = str(link.get("dist_name") or "-").strip()
+    if not dist_name or dist_name == "-":
+        dist_name = "-".join(key)
+    rejected: list[dict[str, Any]] = []
+    for cache_dir in package_cache_dirs:
+        info = Path(cache_dir) / dist_name / "info"
+        for filename, kind in (
+            ("repodata_record.json", "REPODATA_RECORD"),
+            ("index.json", "INDEX"),
+        ):
+            path = info / filename
+            if not path.is_file():
+                continue
+            try:
+                candidate = read_json(path)
+                observed = _plan_key(candidate)
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                rejected.append({"path": str(path), "reason": type(exc).__name__, "detail": str(exc)})
+                continue
+            if observed != key:
+                rejected.append(
+                    {
+                        "path": str(path),
+                        "reason": "EXACT_DISTRIBUTION_MISMATCH",
+                        "expected": list(key),
+                        "observed": list(observed),
+                    }
+                )
+                continue
+            candidate = dict(candidate)
+            candidate["package_cache_metadata_path"] = str(path.resolve())
+            candidate["package_cache_metadata_kind"] = kind
+            return candidate, kind, rejected
+    return None, None, rejected
+
+
+def plan_records(
+    payload: dict[str, Any], package_cache_dirs: Iterable[Path] = ()
+) -> list[dict[str, Any]]:
+    actions = payload.get("actions") or {}
+    link_rows = list(actions.get("LINK") or [])
+    fetch_rows = list(actions.get("FETCH") or [])
+    membership = link_rows or fetch_rows
+
+    fetch_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    fetch_by_name_version: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for raw in fetch_rows:
         row = dict(raw)
-        key = (str(row.get("name", "")).lower(), str(row.get("version", "")), str(row.get("build", "")))
-        merged = {**fetch.get(key, {}), **row}
-        merged["name"] = key[0]
-        merged["version"] = key[1]
-        merged["build"] = key[2]
-        merged["depends"] = list(merged.get("depends") or [])
+        key = _plan_key(row)
+        fetch_by_key[key] = row
+        fetch_by_name_version[key[:2]].append(row)
+
+    records: dict[tuple[str, str, str], dict[str, Any]] = {}
+    cache_dirs = tuple(Path(path) for path in package_cache_dirs)
+    for raw in membership:
+        link = dict(raw)
+        key = _plan_key(link)
+        fetch = fetch_by_key.get(key)
+        if fetch is not None:
+            merged = _merge_plan_rows(link, fetch, "LINK+FETCH" if link_rows else "FETCH")
+        else:
+            conflicting_fetch = fetch_by_name_version.get(key[:2], [])
+            if conflicting_fetch:
+                observed = sorted({_plan_key(row)[2] for row in conflicting_fetch})
+                raise ValueError(
+                    "STAGE1B6J_R3_CONDA_BUILD_FIELD_CONFLICT: "
+                    f"LINK build {key[2]!r} does not match FETCH build(s) {observed!r} "
+                    f"for {key[0]} {key[1]}"
+                )
+            if "depends" in link:
+                merged = dict(link)
+                merged["name"], merged["version"], merged["build"] = key
+                merged["metadata_source"] = "LINK"
+                merged["dependency_metadata_available"] = True
+                merged["depends"] = list(link.get("depends") or [])
+            else:
+                cache, cache_kind, rejected = _exact_package_cache_metadata(link, cache_dirs)
+                if cache is not None:
+                    merged = _merge_plan_rows(link, cache, "LINK+PACKAGE_CACHE")
+                    merged["package_cache_metadata_kind"] = cache_kind
+                    merged["package_cache_rejections"] = rejected
+                else:
+                    merged = dict(link)
+                    merged["name"], merged["version"], merged["build"] = key
+                    merged["metadata_source"] = "LINK_ONLY"
+                    merged["dependency_metadata_available"] = False
+                    merged["depends"] = None
+                    merged["package_cache_rejections"] = rejected
         records[key] = merged
     return [records[key] for key in sorted(records)]
 
@@ -160,8 +283,10 @@ def dependency_satisfied(dependency: str, packages: dict[str, dict[str, Any]]) -
     return version_ok and build_ok, "SATISFIED" if version_ok and build_ok else "VERSION_OR_BUILD_MISMATCH"
 
 
-def audit_plan(payload: dict[str, Any]) -> dict[str, Any]:
-    rows = plan_records(payload)
+def audit_plan(
+    payload: dict[str, Any], package_cache_dirs: Iterable[Path] = ()
+) -> dict[str, Any]:
+    rows = plan_records(payload, package_cache_dirs)
     packages = {str(row["name"]): row for row in rows}
     core = {
         name: {
@@ -181,17 +306,31 @@ def audit_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "build": packages.get(name, {}).get("build"),
             "build_number": packages.get(name, {}).get("build_number"),
             "url": packages.get(name, {}).get("url"),
-            "depends": packages.get(name, {}).get("depends", []),
+            "depends": packages.get(name, {}).get("depends"),
             "openblas_variant": "openblas" in str(packages.get(name, {}).get("build", "")).lower(),
         }
         for name in ("libblas", "libcblas", "liblapack")
     }
     dependency_rows: list[dict[str, Any]] = []
     for row in rows:
-        for dependency in row.get("depends", []):
+        if not row.get("dependency_metadata_available"):
+            continue
+        for dependency in row.get("depends") or []:
             passed, reason = dependency_satisfied(str(dependency), packages)
             dependency_rows.append({"package": row["name"], "dependency": dependency, "passed": passed, "reason": reason})
     unsatisfied = [row for row in dependency_rows if not row["passed"]]
+    incomplete_metadata = [
+        {
+            "name": row["name"],
+            "version": row["version"],
+            "build": row["build"],
+            "metadata_source": row.get("metadata_source"),
+            "package_cache_rejections": row.get("package_cache_rejections", []),
+        }
+        for row in rows
+        if not row.get("dependency_metadata_available")
+    ]
+    dependency_metadata_complete = not incomplete_metadata
     scipy = packages.get("scipy", {})
     scipy_conda = bool(
         scipy
@@ -207,12 +346,25 @@ def audit_plan(payload: dict[str, Any]) -> dict[str, Any]:
         rows and all(item["passed"] for item in core.values()) and not prohibited
         and all(item["openblas_variant"] for item in blas.values())
         and ("libopenblas" in packages or "libopenblas-ilp64" in packages)
-        and scipy_conda and all_conda_forge and not unsatisfied
+        and scipy_conda and all_conda_forge and dependency_metadata_complete and not unsatisfied
+    )
+    classification = (
+        "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_PASS"
+        if passed
+        else (
+            "STAGE1B6J_R3_PLAN_DEPENDENCY_METADATA_INCOMPLETE"
+            if not dependency_metadata_complete
+            else "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_FAILURE"
+        )
     )
     return {
-        "classification": "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_PASS" if passed else "STAGE1B6J_R3_GITHUB_PACKAGE_PLAN_FAILURE",
+        "classification": classification,
         "passed": passed,
         "package_count": len(rows),
+        "records_total": len(rows),
+        "records_with_dependency_metadata": len(rows) - len(incomplete_metadata),
+        "dependency_metadata_complete": dependency_metadata_complete,
+        "dependency_metadata_incomplete_records": incomplete_metadata,
         "packages": rows,
         "core_versions": core,
         "prohibited_packages": prohibited,
@@ -221,6 +373,7 @@ def audit_plan(payload: dict[str, Any]) -> dict[str, Any]:
         "openmp_packages": [row for row in rows if "openmp" in row["name"]],
         "scipy_genuine_conda_forge_record": scipy_conda,
         "all_packages_conda_forge": all_conda_forge,
+        "dependency_checks_total": len(dependency_rows),
         "dependency_checks": dependency_rows,
         "unsatisfied_dependencies": unsatisfied,
     }
@@ -296,6 +449,8 @@ def plan_rejection_summary(audit: dict[str, Any]) -> dict[str, Any]:
         failure_gates.append("scipy_provenance")
     if not audit.get("all_packages_conda_forge"):
         failure_gates.append("non_conda_forge")
+    if not audit.get("dependency_metadata_complete"):
+        failure_gates.append("dependency_metadata_incomplete")
     if unsatisfied:
         failure_gates.append("dependency_checker")
 
@@ -308,6 +463,11 @@ def plan_rejection_summary(audit: dict[str, Any]) -> dict[str, Any]:
         ),
         "passed": bool(audit.get("passed")),
         "package_count": int(audit.get("package_count", 0)),
+        "plan_classification": audit.get("classification"),
+        "records_total": int(audit.get("records_total", 0)),
+        "records_with_dependency_metadata": int(audit.get("records_with_dependency_metadata", 0)),
+        "dependency_metadata_complete": bool(audit.get("dependency_metadata_complete")),
+        "dependency_metadata_incomplete_records": list(audit.get("dependency_metadata_incomplete_records", [])),
         "failure_gates": failure_gates,
         "core_version_failures": core_failures,
         "prohibited_packages": list(audit.get("prohibited_packages", [])),
@@ -317,6 +477,7 @@ def plan_rejection_summary(audit: dict[str, Any]) -> dict[str, Any]:
         "all_packages_conda_forge": bool(audit.get("all_packages_conda_forge")),
         "non_conda_forge_packages": non_conda_forge,
         "openmp_packages": openmp_packages,
+        "dependency_checks_total": int(audit.get("dependency_checks_total", 0)),
         "unsatisfied_dependency_count": len(unsatisfied),
         "unsatisfied_dependencies": unsatisfied,
         "dependency_interpretation_classification": (
@@ -398,7 +559,9 @@ def protected_check(root: Path, manifest_path: Path) -> dict[str, Any]:
 
 def command_plan(args: argparse.Namespace) -> int:
     payload = read_json(args.dry_run)
-    audit = audit_plan(payload)
+    conda_info = read_json(args.conda_info) if args.conda_info is not None else {}
+    package_cache_dirs = [Path(path) for path in conda_info.get("pkgs_dirs", [])]
+    audit = audit_plan(payload, package_cache_dirs)
     write_json(args.output, audit)
     if args.rejection_summary is not None and not audit["passed"]:
         write_json(args.rejection_summary, plan_rejection_summary(audit))
@@ -453,6 +616,7 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--dry-run", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
     plan.add_argument("--rejection-summary", type=Path)
+    plan.add_argument("--conda-info", type=Path)
     plan.set_defaults(func=command_plan)
     classify = sub.add_parser("classify")
     classify.add_argument("--dry-run", type=Path, required=True)

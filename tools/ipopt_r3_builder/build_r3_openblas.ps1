@@ -200,7 +200,7 @@ $PackagePlan = Join-Path $OutputDirectory 'github_package_plan.json'
 $PackagePlanRejectionSummary = Join-Path $OutputDirectory 'github_package_plan_rejection_summary.json'
 $planAudit = Invoke-NativeCaptured `
     $BuilderPython `
-    @($AuditScript, 'plan', '--dry-run', $dryRunPath, '--output', $PackagePlan, '--rejection-summary', $PackagePlanRejectionSummary) `
+    @($AuditScript, 'plan', '--dry-run', $dryRunPath, '--output', $PackagePlan, '--rejection-summary', $PackagePlanRejectionSummary, '--conda-info', $condaInfoPath) `
     (Join-Path $Logs 'plan_audit.stdout.txt') `
     (Join-Path $Logs 'plan_audit.stderr.txt') `
     -AllowFailure
@@ -211,7 +211,10 @@ if ($planAudit.ExitCode -ne 0) {
         $compact = [ordered]@{
             classification = $rejection.classification
             package_count = $rejection.package_count
+            records_with_dependency_metadata = $rejection.records_with_dependency_metadata
+            dependency_metadata_complete = $rejection.dependency_metadata_complete
             failure_gates = $rejection.failure_gates
+            dependency_checks_total = $rejection.dependency_checks_total
             unsatisfied_dependency_count = $rejection.unsatisfied_dependency_count
             dependency_interpretation_classification = $rejection.dependency_interpretation_classification
         }
