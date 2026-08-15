@@ -22,6 +22,8 @@ sys.path.insert(0, str(TOOLS))
 
 from r3_audit import (  # noqa: E402
     EXPECTED,
+    _fallback_version_satisfies,
+    _version_satisfies,
     audit_dll_resolution,
     audit_ownership,
     audit_plan,
@@ -33,6 +35,7 @@ from r3_audit import (  # noqa: E402
     plan_records,
     protected_check,
     sha256_file,
+    version_matcher_info,
     verify_hash_manifest,
 )
 
@@ -745,3 +748,133 @@ def test_40_r3f_link_membership_survives_partial_fetch_with_cache(tmp_path: Path
     assert sum(row["metadata_source"] == "LINK+PACKAGE_CACHE" for row in rows) == 19
     assert all(row["dependency_metadata_available"] for row in rows)
 
+
+def test_41_r3g_exact_builder_matcher_provenance_is_recorded() -> None:
+    info = version_matcher_info()
+    assert Path(info["builder_python"]).resolve() == Path(sys.executable).resolve()
+    assert isinstance(info["conda_import_available"], bool)
+    assert isinstance(info["conda_version_spec_import_available"], bool)
+    assert isinstance(info["conda_match_spec_import_available"], bool)
+    assert info["runtime_matcher"] in {
+        "conda.models.version.VersionSpec",
+        "r3_component_boundary_fallback",
+    }
+    audit = audit_plan(valid_payload())
+    assert audit["version_matcher"] == info
+
+
+def test_42_r3g_python_abi_fuzzy_version_has_component_boundaries() -> None:
+    cases = {
+        "3.12": True,
+        "3.12.0": True,
+        "3.12.13": True,
+        "3.1": False,
+        "3.120": False,
+        "3.13": False,
+        "13.12": False,
+    }
+    for version, expected in cases.items():
+        assert _fallback_version_satisfies(version, "3.12.*") is expected
+        assert _version_satisfies(version, "3.12.*") is expected
+
+
+def test_43_r3g_arrow_fuzzy_version_has_component_boundaries() -> None:
+    cases = {
+        "25.0.0": True,
+        "25.0.0.1": True,
+        "25.0.0.post1": True,
+        "25.0": False,
+        "25.0.1": False,
+        "25.0.01": False,
+    }
+    for version, expected in cases.items():
+        assert _fallback_version_satisfies(version, "25.0.0.*") is expected
+        assert _version_satisfies(version, "25.0.0.*") is expected
+
+
+def test_44_r3g_existing_version_operators_and_invalid_specs_remain_fail_closed() -> None:
+    passing = (
+        ("1.2.3", "1.2.3"),
+        ("1.2.3", "==1.2.3"),
+        ("1.2.3", "!=1.2.4"),
+        ("1.2.3", ">1.2.2"),
+        ("1.2.3", ">=1.2.3"),
+        ("1.2.3", "<2"),
+        ("1.2.3", "<=1.2.3"),
+        ("1.2.3", ">=1.2,<2"),
+        ("2.0", "1.2.3|2.0"),
+        ("1.2.3", "1.*.3"),
+    )
+    for version, expression in passing:
+        assert _version_satisfies(version, expression)
+    for expression in ("", "=>1.0", ">=", "1.0||2.0", ">=1.0,", ">=1.0.*"):
+        assert not _fallback_version_satisfies("1.2.3", expression)
+        assert not _version_satisfies("1.2.3", expression)
+
+
+def test_45_r3g_all_fourteen_r3f_false_rejections_are_satisfied() -> None:
+    packages = {
+        "python_abi": {"version": "3.12", "build": "8_cp312"},
+        "libarrow-acero": {"version": "25.0.0", "build": "h123_3"},
+        "libarrow": {"version": "25.0.0", "build": "h20c36f3_3_cpu"},
+        "libarrow-compute": {"version": "25.0.0", "build": "h081cd8e_3_cpu"},
+    }
+    dependencies = (
+        ["python_abi 3.12.* *_cp312"] * 8
+        + ["libarrow-acero 25.0.0.*"] * 2
+        + ["libarrow 25.0.0.* *cpu"] * 2
+        + ["libarrow-compute 25.0.0.* *cpu"] * 2
+    )
+    results = [dependency_satisfied(dependency, packages) for dependency in dependencies]
+    assert len(results) == 14
+    assert all(passed and reason == "SATISFIED" for passed, reason in results)
+
+
+def test_46_r3g_r3f_transaction_fixture_runs_502_dependency_checks_without_rejection() -> None:
+    payload = r3e_schema_payload()
+    targets = (
+        package("python_abi", "3.12", "8_cp312"),
+        package("libarrow-acero", "25.0.0", "h123_3"),
+        package("libarrow", "25.0.0", "h20c36f3_3_cpu"),
+        package("libarrow-compute", "25.0.0", "h081cd8e_3_cpu"),
+    )
+    for row in targets:
+        payload["actions"]["LINK"].append(
+            {
+                "name": row["name"],
+                "version": row["version"],
+                "build_string": row["build"],
+                "dist_name": f'{row["name"]}-{row["version"]}-{row["build"]}',
+                "channel": "conda-forge",
+            }
+        )
+        payload["actions"]["FETCH"].append(row)
+
+    numpy = next(row for row in payload["actions"]["FETCH"] if row["name"] == "numpy")
+    numpy["depends"] = (
+        ["python >=3.12"] * 484
+        + ["python_abi 3.12.* *_cp312"] * 8
+        + ["libarrow-acero 25.0.0.*"] * 2
+        + ["libarrow 25.0.0.* *cpu"] * 2
+        + ["libarrow-compute 25.0.0.* *cpu"] * 2
+    )
+    audit = audit_plan(payload)
+    assert audit["dependency_metadata_complete"] is True
+    assert audit["dependency_checks_total"] == 502
+    assert audit["unsatisfied_dependencies"] == []
+    assert audit["passed"] is True
+
+
+def test_47_r3g_build_matching_and_package_plan_policy_are_unchanged() -> None:
+    packages = {"python_abi": {"version": "3.12", "build": "8_cp311"}}
+    assert dependency_satisfied("python_abi 3.12.* *_cp312", packages) == (
+        False,
+        "VERSION_OR_BUILD_MISMATCH",
+    )
+    source = inspect.getsource(audit_plan)
+    assert "dependency_metadata_complete and not unsatisfied" in source
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    match = re.search(r"\$Specs = @\(.*?\n\)", builder, flags=re.DOTALL)
+    assert match is not None
+    normalized = match.group(0).replace("\r\n", "\n").encode()
+    assert hashlib.sha256(normalized).hexdigest() == "dbe2f12bbe5e33a26c638d80ae44577fe5e95c941e096af108f3baae7c8aff81"

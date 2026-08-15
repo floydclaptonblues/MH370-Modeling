@@ -5,9 +5,25 @@ import fnmatch
 import hashlib
 import json
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    import conda as _conda_module
+except ImportError:
+    _conda_module = None
+
+try:
+    from conda.models.version import VersionSpec as _CondaVersionSpec
+except ImportError:
+    _CondaVersionSpec = None
+
+try:
+    from conda.models.match_spec import MatchSpec as _CondaMatchSpec
+except ImportError:
+    _CondaMatchSpec = None
 
 
 EXPECTED = {
@@ -235,23 +251,68 @@ def _compare(left: str, right: str) -> int:
     return (len(a) > len(b)) - (len(a) < len(b))
 
 
-def _version_satisfies(version: str, expression: str) -> bool:
+def version_matcher_info() -> dict[str, Any]:
+    return {
+        "builder_python": str(Path(sys.executable).resolve()),
+        "conda_import_available": _conda_module is not None,
+        "conda_module_path": (
+            str(Path(_conda_module.__file__).resolve())
+            if _conda_module is not None and getattr(_conda_module, "__file__", None)
+            else None
+        ),
+        "conda_version_if_available": (
+            getattr(_conda_module, "__version__", None) if _conda_module is not None else None
+        ),
+        "conda_version_spec_import_available": _CondaVersionSpec is not None,
+        "conda_match_spec_import_available": _CondaMatchSpec is not None,
+        "runtime_matcher": (
+            "conda.models.version.VersionSpec"
+            if _CondaVersionSpec is not None
+            else "r3_component_boundary_fallback"
+        ),
+    }
+
+
+def _component_fuzzy_equal(version: str, wanted: str) -> bool:
+    base = wanted[:-2]
+    return bool(base) and (version == base or version.startswith(base + "."))
+
+
+def _fallback_version_satisfies(version: str, expression: str) -> bool:
     expression = expression.strip()
-    if not expression or expression == "*":
+    if not expression:
+        return False
+    if expression == "*":
         return True
-    for alternative in expression.split("|"):
-        okay = True
-        for clause in alternative.split(","):
-            clause = clause.strip()
-            match = re.match(r"^(>=|<=|!=|==|>|<|=)?\s*(.+)$", clause)
+    alternatives = expression.split("|")
+    if any(not alternative.strip() for alternative in alternatives):
+        return False
+    parsed: list[list[tuple[str, str]]] = []
+    for alternative in alternatives:
+        clauses = alternative.split(",")
+        if any(not clause.strip() for clause in clauses):
+            return False
+        parsed_alternative: list[tuple[str, str]] = []
+        for clause in clauses:
+            match = re.fullmatch(r"(>=|<=|!=|==|>|<|=)?\s*([^<>=!\s][^\s]*)", clause.strip())
             if not match:
-                okay = False
-                continue
-            op, wanted = match.group(1) or "=", match.group(2)
-            if wanted.endswith(".*"):
-                equal = version.startswith(wanted[:-1])
-                comparison = 0 if equal else _compare(version, wanted[:-2])
-            elif "*" in wanted:
+                return False
+            parsed_alternative.append((match.group(1) or "=", match.group(2)))
+        parsed.append(parsed_alternative)
+
+    for alternative in parsed:
+        okay = True
+        for op, wanted in alternative:
+            fuzzy = wanted.endswith(".*") and wanted.count("*") == 1
+            wildcard = "*" in wanted and not fuzzy
+            if fuzzy:
+                if op not in {"=", "==", "!="}:
+                    return False
+                equal = _component_fuzzy_equal(version, wanted)
+                comparison = 0 if equal else 1
+            elif wildcard:
+                if op not in {"=", "==", "!="}:
+                    return False
                 equal = fnmatch.fnmatch(version, wanted)
                 comparison = 0 if equal else 1
             else:
@@ -264,6 +325,18 @@ def _version_satisfies(version: str, expression: str) -> bool:
         if okay:
             return True
     return False
+
+
+def _version_satisfies(version: str, expression: str) -> bool:
+    expression = expression.strip()
+    if not expression:
+        return False
+    if _CondaVersionSpec is not None:
+        try:
+            return bool(_CondaVersionSpec(expression).match(version))
+        except Exception:
+            return False
+    return _fallback_version_satisfies(version, expression)
 
 
 def dependency_satisfied(dependency: str, packages: dict[str, dict[str, Any]]) -> tuple[bool, str]:
@@ -376,6 +449,7 @@ def audit_plan(
         "dependency_checks_total": len(dependency_rows),
         "dependency_checks": dependency_rows,
         "unsatisfied_dependencies": unsatisfied,
+        "version_matcher": version_matcher_info(),
     }
 
 
@@ -648,4 +722,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
