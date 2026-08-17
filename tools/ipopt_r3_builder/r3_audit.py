@@ -571,6 +571,33 @@ def receipt_records(prefix: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def receipt_inventory_records(receipts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a conda-list-shaped inventory without invoking pip interoperability."""
+    inventory = []
+    for row in receipts:
+        channel = str(row.get("channel", ""))
+        subdir = str(row.get("subdir", ""))
+        suffix = f"/{subdir}" if subdir else ""
+        base_url = channel[: -len(suffix)] if suffix and channel.endswith(suffix) else channel
+        channel_name = "conda-forge" if "conda-forge" in channel else channel
+        name = str(row.get("name", ""))
+        version = str(row.get("version", ""))
+        build = str(row.get("build", ""))
+        inventory.append(
+            {
+                "base_url": base_url,
+                "build_number": int(row.get("build_number", 0)),
+                "build_string": build,
+                "channel": channel_name,
+                "dist_name": f"{name}-{version}-{build}",
+                "name": name,
+                "platform": subdir,
+                "version": version,
+            }
+        )
+    return sorted(inventory, key=lambda row: (row["name"], row["version"], row["build_string"]))
+
+
 def compare_plan_receipts(plan: dict[str, Any], receipts: list[dict[str, Any]]) -> dict[str, Any]:
     planned = {(row["name"], row["version"], row["build"]) for row in plan["packages"]}
     installed = {(str(row.get("name", "")).lower(), str(row.get("version", "")), str(row.get("build", ""))) for row in receipts}
@@ -666,6 +693,8 @@ def command_receipts(args: argparse.Namespace) -> int:
     }
     result["passed"] = result["plan_vs_receipts"]["passed"] and result["ownership"]["passed"]
     write_json(args.output, result)
+    if args.installed_list_output:
+        write_json(args.installed_list_output, receipt_inventory_records(receipts))
     return 0 if result["passed"] else 1
 
 
@@ -702,6 +731,7 @@ def parser() -> argparse.ArgumentParser:
     receipts.add_argument("--plan", type=Path, required=True)
     receipts.add_argument("--prefix", type=Path, required=True)
     receipts.add_argument("--output", type=Path, required=True)
+    receipts.add_argument("--installed-list-output", type=Path)
     receipts.set_defaults(func=command_receipts)
     hashes = sub.add_parser("hash-manifest")
     hashes.add_argument("--root", type=Path, required=True)

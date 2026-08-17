@@ -34,6 +34,7 @@ from r3_audit import (  # noqa: E402
     plan_rejection_summary,
     plan_records,
     protected_check,
+    receipt_inventory_records,
     sha256_file,
     version_matcher_info,
     verify_hash_manifest,
@@ -980,17 +981,84 @@ def test_51_r3i_existing_failure_artifact_uploads_install_transaction_diagnostic
         "installed_conda_explicit.txt",
         "logs/environment_creation.stdout.txt",
         "logs/environment_creation.stderr.txt",
-        "logs/conda_list.stderr.txt",
         "logs/conda_explicit.stderr.txt",
     )
     assert all(f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step for path in required)
     assert all(path not in failure_step for path in ("runtime.tar.gz", "phase4c_stage1b6j_r3_scientific_payload.zip", "probe_records"))
 
 
-def test_52_r3i_builder_materializes_install_evidence_before_receipt_gate() -> None:
+def test_52_r3i_builder_materializes_install_evidence_at_receipt_gate() -> None:
     builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
     receipt_start = builder.index("$ReceiptAudit =")
-    evidence = ("environment_creation.stdout.txt", "environment_creation.stderr.txt", "installed_conda_list.json", "installed_conda_explicit.txt", "conda_list.stderr.txt", "conda_explicit.stderr.txt")
-    assert all(builder.index(path) < receipt_start for path in evidence)
+    evidence_before_gate = ("environment_creation.stdout.txt", "environment_creation.stderr.txt", "installed_conda_explicit.txt", "conda_explicit.stderr.txt")
+    assert all(builder.index(path) < receipt_start for path in evidence_before_gate)
     failure_block = builder[receipt_start:builder.index("$ActivePrefix =", receipt_start)]
+    assert "installed_conda_list.json" in failure_block
+    assert "--installed-list-output" in failure_block
     assert failure_block.index("Copy-Item -LiteralPath $Logs") < failure_block.index("throw 'STAGE1B6J")
+
+
+def test_53_r3j_receipt_inventory_is_conda_only_and_survives_rejection(tmp_path: Path) -> None:
+    plan = tmp_path / "plan.json"
+    prefix = tmp_path / "candidate"
+    conda_meta = prefix / "conda-meta"
+    audit_output = tmp_path / "github_receipt_and_file_ownership.json"
+    inventory_output = tmp_path / "installed_conda_list.json"
+    conda_meta.mkdir(parents=True)
+    plan.write_text(
+        json.dumps(
+            {
+                "packages": [
+                    package("scipy", "1.18.0", "py312h9b3c559_0"),
+                    package("pyarrow-core", "25.0.0", "py312h12c7521_0_cpu"),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    scipy_receipt = {
+        **package("scipy", "1.18.0", "py312h9b3c559_0"),
+        "receipt_path": str(conda_meta / "scipy.json"),
+        "files": ["Lib/site-packages/scipy-1.18.0.dist-info/RECORD"],
+    }
+    (conda_meta / "scipy.json").write_text(json.dumps(scipy_receipt), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "r3_audit.py"),
+            "receipts",
+            "--plan",
+            str(plan),
+            "--prefix",
+            str(prefix),
+            "--output",
+            str(audit_output),
+            "--installed-list-output",
+            str(inventory_output),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert audit_output.is_file()
+    assert inventory_output.is_file()
+    inventory = json.loads(inventory_output.read_text(encoding="utf-8"))
+    assert inventory == receipt_inventory_records([scipy_receipt])
+    assert inventory[0]["channel"] == "conda-forge"
+    assert inventory[0]["build_string"] == "py312h9b3c559_0"
+    assert all(row["platform"] == "win-64" for row in inventory)
+    assert all(row["channel"] != "pypi" for row in inventory)
+
+
+def test_54_r3j_builder_cannot_run_destructive_interoperable_inventory() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    assert "$env:CONDA_PREFIX_DATA_INTEROPERABILITY = 'false'" in builder
+    assert builder.index("CONDA_PREFIX_DATA_INTEROPERABILITY") < builder.index("$dryRunArgs =")
+    assert "@('list', '--prefix', $Candidate, '--json')" not in builder
+    receipt_start = builder.index("$ReceiptAudit =")
+    receipt_block = builder[receipt_start:builder.index("$ActivePrefix =", receipt_start)]
+    assert "--installed-list-output" in receipt_block
+    assert receipt_block.index("--installed-list-output") < receipt_block.index("if ($ReceiptAuditResult.ExitCode -ne 0)")

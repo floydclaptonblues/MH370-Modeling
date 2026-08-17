@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$env:CONDA_PREFIX_DATA_INTEROPERABILITY = 'false'
 
 $BuilderRoot = $PSScriptRoot
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $BuilderRoot '..\..')).Path
@@ -227,14 +228,14 @@ $createArgs = @('create', '--yes', '--strict-channel-priority', '--override-chan
 Invoke-NativeCaptured $CondaExe $createArgs (Join-Path $Logs 'environment_creation.stdout.txt') (Join-Path $Logs 'environment_creation.stderr.txt') | Out-Null
 $CandidatePython = Join-Path $Candidate 'python.exe'
 if (-not (Test-Path -LiteralPath $CandidatePython -PathType Leaf)) { throw 'Candidate Python was not created.' }
-Invoke-NativeCaptured $CondaExe @('list', '--prefix', $Candidate, '--json') (Join-Path $OutputDirectory 'installed_conda_list.json') (Join-Path $Logs 'conda_list.stderr.txt') | Out-Null
 Invoke-NativeCaptured $CondaExe @('list', '--prefix', $Candidate, '--explicit') (Join-Path $OutputDirectory 'installed_conda_explicit.txt') (Join-Path $Logs 'conda_explicit.stderr.txt') | Out-Null
 $ReceiptAudit = Join-Path $OutputDirectory 'github_receipt_and_file_ownership.json'
+$InstalledCondaList = Join-Path $OutputDirectory 'installed_conda_list.json'
 $ReceiptAuditStdout = Join-Path $Logs 'receipt_audit.stdout.txt'
 $ReceiptAuditStderr = Join-Path $Logs 'receipt_audit.stderr.txt'
 $ReceiptAuditResult = Invoke-NativeCaptured `
     $BuilderPython `
-    @($AuditScript, 'receipts', '--plan', $PackagePlan, '--prefix', $Candidate, '--output', $ReceiptAudit) `
+    @($AuditScript, 'receipts', '--plan', $PackagePlan, '--prefix', $Candidate, '--output', $ReceiptAudit, '--installed-list-output', $InstalledCondaList) `
     $ReceiptAuditStdout `
     $ReceiptAuditStderr `
     -AllowFailure
