@@ -66,6 +66,12 @@ jobs:
             phase4c_stage1b6j_r3_artifact/logs/plan_audit.stdout.txt
             phase4c_stage1b6j_r3_artifact/logs/plan_audit.stderr.txt
             phase4c_stage1b6j_r3_artifact/github_receipt_and_file_ownership.json
+            phase4c_stage1b6j_r3_artifact/installed_conda_list.json
+            phase4c_stage1b6j_r3_artifact/installed_conda_explicit.txt
+            phase4c_stage1b6j_r3_artifact/logs/environment_creation.stdout.txt
+            phase4c_stage1b6j_r3_artifact/logs/environment_creation.stderr.txt
+            phase4c_stage1b6j_r3_artifact/logs/conda_list.stderr.txt
+            phase4c_stage1b6j_r3_artifact/logs/conda_explicit.stderr.txt
             phase4c_stage1b6j_r3_artifact/logs/receipt_audit.stdout.txt
             phase4c_stage1b6j_r3_artifact/logs/receipt_audit.stderr.txt
           if-no-files-found: warn

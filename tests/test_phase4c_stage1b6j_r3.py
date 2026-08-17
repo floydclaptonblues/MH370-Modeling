@@ -551,8 +551,9 @@ def test_32_r3e_failure_artifact_excludes_runtime_payloads() -> None:
     failure_step = workflow.split("- name: Upload package-plan failure diagnostics", 1)[1].split(
         "- name: Upload only the fully validated runtime artifact", 1
     )[0]
-    assert "installed_conda" not in failure_step
     assert "runtime.tar.gz" not in failure_step
+    assert "phase4c_stage1b6j_r3_scientific_payload.zip" not in failure_step
+    assert "probe_records" not in failure_step
 
 
 def test_33_r3f_link_build_string_fetch_build_merge_retains_rich_metadata() -> None:
@@ -968,5 +969,28 @@ def test_50_r3h_existing_failure_artifact_uploads_all_receipt_diagnostics() -> N
         "logs/receipt_audit.stderr.txt",
     ):
         assert f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step
-    assert "installed_conda" not in failure_step
     assert "runtime.tar.gz" not in failure_step
+
+
+def test_51_r3i_existing_failure_artifact_uploads_install_transaction_diagnostics() -> None:
+    workflow = (ROOT / ".github/workflows/phase4c-stage1b6j-r3-openblas-runtime.yml").read_text(encoding="utf-8")
+    failure_step = workflow.split("Upload package-plan failure diagnostics", 1)[1].split("Upload only the fully validated runtime artifact", 1)[0]
+    required = (
+        "installed_conda_list.json",
+        "installed_conda_explicit.txt",
+        "logs/environment_creation.stdout.txt",
+        "logs/environment_creation.stderr.txt",
+        "logs/conda_list.stderr.txt",
+        "logs/conda_explicit.stderr.txt",
+    )
+    assert all(f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step for path in required)
+    assert all(path not in failure_step for path in ("runtime.tar.gz", "phase4c_stage1b6j_r3_scientific_payload.zip", "probe_records"))
+
+
+def test_52_r3i_builder_materializes_install_evidence_before_receipt_gate() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    receipt_start = builder.index("$ReceiptAudit =")
+    evidence = ("environment_creation.stdout.txt", "environment_creation.stderr.txt", "installed_conda_list.json", "installed_conda_explicit.txt", "conda_list.stderr.txt", "conda_explicit.stderr.txt")
+    assert all(builder.index(path) < receipt_start for path in evidence)
+    failure_block = builder[receipt_start:builder.index("$ActivePrefix =", receipt_start)]
+    assert failure_block.index("Copy-Item -LiteralPath $Logs") < failure_block.index("throw 'STAGE1B6J")
