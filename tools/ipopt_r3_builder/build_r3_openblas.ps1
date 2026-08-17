@@ -31,7 +31,7 @@ function Write-Utf8NoBom {
 function Invoke-NativeCaptured {
     param(
         [string]$FilePath, [string[]]$Arguments, [string]$StdoutPath, [string]$StderrPath,
-        [switch]$AllowFailure
+        [switch]$AllowFailure, [string]$RawCommandLine = ''
     )
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $FilePath
@@ -39,7 +39,11 @@ function Invoke-NativeCaptured {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    foreach ($argument in $Arguments) { [void]$start.ArgumentList.Add($argument) }
+    if ($RawCommandLine) {
+        $start.Arguments = $RawCommandLine
+    } else {
+        foreach ($argument in $Arguments) { [void]$start.ArgumentList.Add($argument) }
+    }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     if (-not $process.Start()) { throw "Failed to start $FilePath" }
@@ -68,7 +72,8 @@ function Invoke-Probe {
     if ($Module -eq 'callback_stack') { $arguments += @('--project-root', $ScientificRoot) }
     if ($Mode -in @('activated', 'relocated')) {
         $command = "call `"$ActivePrefix\Scripts\activate.bat`" && `"$Python`" " + (($arguments | ForEach-Object { '"' + ($_ -replace '"','\"') + '"' }) -join ' ')
-        return Invoke-NativeCaptured $CmdExe @('/d', '/s', '/c', $command) ($Output + '.stdout.txt') ($Output + '.stderr.txt') -AllowFailure:$AllowFailure
+        $cmdCommandLine = '/d /s /c "' + $command + '"'
+        return Invoke-NativeCaptured $CmdExe @() ($Output + '.stdout.txt') ($Output + '.stderr.txt') -AllowFailure:$AllowFailure -RawCommandLine $cmdCommandLine
     }
     return Invoke-NativeCaptured $Python $arguments ($Output + '.stdout.txt') ($Output + '.stderr.txt') -AllowFailure:$AllowFailure
 }

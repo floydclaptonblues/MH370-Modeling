@@ -1118,3 +1118,23 @@ def test_57_r3l_windows_module_enumerator_uses_pointer_sized_api_types() -> None
         assert modules
         assert any(Path(path).name.lower().startswith("python") for path in modules)
 
+
+def test_58_r3m_activated_probe_uses_cmd_native_raw_quoting() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    native_start = builder.index("function Invoke-NativeCaptured")
+    probe_start = builder.index("function Invoke-Probe", native_start)
+    native_block = builder[native_start:probe_start]
+    probe_end = builder.index("function Merge-Probes", probe_start)
+    probe_block = builder[probe_start:probe_end]
+
+    for required in (
+        "[string]$RawCommandLine = ''",
+        "$start.Arguments = $RawCommandLine",
+        "$cmdCommandLine = '/d /s /c \"' + $command + '\"'",
+        "Invoke-NativeCaptured $CmdExe @()",
+        "-RawCommandLine $cmdCommandLine",
+    ):
+        assert required in builder
+    assert native_block.index("$start.Arguments = $RawCommandLine") < native_block.index("$start.ArgumentList.Add")
+    assert "Invoke-NativeCaptured $CmdExe @('/d', '/s', '/c', $command)" not in probe_block
+
