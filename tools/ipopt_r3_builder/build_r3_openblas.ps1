@@ -230,7 +230,43 @@ if (-not (Test-Path -LiteralPath $CandidatePython -PathType Leaf)) { throw 'Cand
 Invoke-NativeCaptured $CondaExe @('list', '--prefix', $Candidate, '--json') (Join-Path $OutputDirectory 'installed_conda_list.json') (Join-Path $Logs 'conda_list.stderr.txt') | Out-Null
 Invoke-NativeCaptured $CondaExe @('list', '--prefix', $Candidate, '--explicit') (Join-Path $OutputDirectory 'installed_conda_explicit.txt') (Join-Path $Logs 'conda_explicit.stderr.txt') | Out-Null
 $ReceiptAudit = Join-Path $OutputDirectory 'github_receipt_and_file_ownership.json'
-Invoke-NativeCaptured $BuilderPython @($AuditScript, 'receipts', '--plan', $PackagePlan, '--prefix', $Candidate, '--output', $ReceiptAudit) (Join-Path $Logs 'receipt_audit.stdout.txt') (Join-Path $Logs 'receipt_audit.stderr.txt') | Out-Null
+$ReceiptAuditStdout = Join-Path $Logs 'receipt_audit.stdout.txt'
+$ReceiptAuditStderr = Join-Path $Logs 'receipt_audit.stderr.txt'
+$ReceiptAuditResult = Invoke-NativeCaptured `
+    $BuilderPython `
+    @($AuditScript, 'receipts', '--plan', $PackagePlan, '--prefix', $Candidate, '--output', $ReceiptAudit) `
+    $ReceiptAuditStdout `
+    $ReceiptAuditStderr `
+    -AllowFailure
+if ($ReceiptAuditResult.ExitCode -ne 0) {
+    Copy-Item -LiteralPath $Logs -Destination (Join-Path $OutputDirectory 'logs') -Recurse
+    $plannedCount = $null
+    $installedCount = $null
+    $missing = $null
+    $extra = $null
+    $criticalConflicts = $null
+    if (Test-Path -LiteralPath $ReceiptAudit -PathType Leaf) {
+        try {
+            $receiptDiagnostic = Get-Content -LiteralPath $ReceiptAudit -Raw | ConvertFrom-Json
+            $plannedCount = $receiptDiagnostic.plan_vs_receipts.planned_count
+            $installedCount = $receiptDiagnostic.plan_vs_receipts.installed_count
+            $missing = $receiptDiagnostic.plan_vs_receipts.missing
+            $extra = $receiptDiagnostic.plan_vs_receipts.extra
+            $criticalConflicts = $receiptDiagnostic.ownership.critical_conflicts
+        } catch {
+            Write-Output "R3 receipt-audit diagnostic parse failure: $($_.Exception.Message)"
+        }
+    }
+    $compact = [ordered]@{
+        planned_count = $plannedCount
+        installed_count = $installedCount
+        missing = $missing
+        extra = $extra
+        critical_conflicts = $criticalConflicts
+    }
+    Write-Output ('R3 receipt-audit rejection summary: ' + ($compact | ConvertTo-Json -Compress -Depth 20))
+    throw 'STAGE1B6J_R3_GITHUB_RECEIPT_AND_FILE_OWNERSHIP_AUDIT_REJECTED'
+}
 
 $ActivePrefix = $Candidate
 $dllPaths = @()

@@ -65,6 +65,9 @@ jobs:
             phase4c_stage1b6j_r3_artifact/logs/github_dry_run.stderr.txt
             phase4c_stage1b6j_r3_artifact/logs/plan_audit.stdout.txt
             phase4c_stage1b6j_r3_artifact/logs/plan_audit.stderr.txt
+            phase4c_stage1b6j_r3_artifact/github_receipt_and_file_ownership.json
+            phase4c_stage1b6j_r3_artifact/logs/receipt_audit.stdout.txt
+            phase4c_stage1b6j_r3_artifact/logs/receipt_audit.stderr.txt
           if-no-files-found: warn
           retention-days: 30
 

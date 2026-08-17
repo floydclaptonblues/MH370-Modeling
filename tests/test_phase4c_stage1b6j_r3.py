@@ -530,7 +530,7 @@ def test_31_r3e_builder_stops_before_candidate_installation() -> None:
     assert plan_start < install_start
 
 
-def test_32_r3e_failure_artifact_contains_only_preinstall_diagnostics() -> None:
+def test_32_r3e_failure_artifact_excludes_runtime_payloads() -> None:
     workflow = (ROOT / ".github/workflows/phase4c-stage1b6j-r3-openblas-runtime.yml").read_text(encoding="utf-8")
     assert "if: ${{ failure() }}" in workflow
     assert "phase4c-stage1b6j-r3-package-plan-failure-diagnostics" in workflow
@@ -878,3 +878,95 @@ def test_47_r3g_build_matching_and_package_plan_policy_are_unchanged() -> None:
     assert match is not None
     normalized = match.group(0).replace("\r\n", "\n").encode()
     assert hashlib.sha256(normalized).hexdigest() == "dbe2f12bbe5e33a26c638d80ae44577fe5e95c941e096af108f3baae7c8aff81"
+
+
+def test_48_r3h_failed_receipt_audit_writes_complete_diagnostic_before_exit(tmp_path: Path) -> None:
+    plan = tmp_path / "plan.json"
+    prefix = tmp_path / "candidate"
+    conda_meta = prefix / "conda-meta"
+    output = tmp_path / "github_receipt_and_file_ownership.json"
+    conda_meta.mkdir(parents=True)
+    plan.write_text(
+        json.dumps({"packages": [{"name": "libopenblas", "version": "1", "build": "h0"}]}),
+        encoding="utf-8",
+    )
+    shared_file = "Library/bin/libopenblas.dll"
+    receipts = (
+        {"name": "libopenblas", "version": "1", "build": "h0", "files": [shared_file]},
+        {"name": "shadow-runtime", "version": "1", "build": "h1", "files": [shared_file]},
+    )
+    for index, receipt in enumerate(receipts):
+        (conda_meta / f"receipt-{index}.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "r3_audit.py"),
+            "receipts",
+            "--plan",
+            str(plan),
+            "--prefix",
+            str(prefix),
+            "--output",
+            str(output),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert output.is_file()
+    diagnostic = json.loads(output.read_text(encoding="utf-8"))
+    assert diagnostic["passed"] is False
+    assert diagnostic["plan_vs_receipts"] == {
+        "passed": False,
+        "missing": [],
+        "extra": [["shadow-runtime", "1", "h1"]],
+        "planned_count": 1,
+        "installed_count": 2,
+    }
+    assert diagnostic["ownership"]["critical_conflicts"] == {
+        "library\\bin\\libopenblas.dll": ["libopenblas-1-h0", "shadow-runtime-1-h1"]
+    }
+
+
+def test_49_r3h_builder_preserves_receipt_evidence_summarizes_and_fails_closed() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    receipt_start = builder.index("$ReceiptAudit =")
+    probes_start = builder.index("$ActivePrefix =", receipt_start)
+    receipt_block = builder[receipt_start:probes_start]
+
+    for required in (
+        "receipt_audit.stdout.txt",
+        "receipt_audit.stderr.txt",
+        "-AllowFailure",
+        "if ($ReceiptAuditResult.ExitCode -ne 0)",
+        "Copy-Item -LiteralPath $Logs",
+        "planned_count",
+        "installed_count",
+        "missing",
+        "extra",
+        "critical_conflicts",
+        "ConvertTo-Json -Compress",
+        "STAGE1B6J_R3_GITHUB_RECEIPT_AND_FILE_OWNERSHIP_AUDIT_REJECTED",
+    ):
+        assert required in receipt_block
+    assert receipt_block.index("-AllowFailure") < receipt_block.index("if ($ReceiptAuditResult.ExitCode -ne 0)")
+    assert receipt_block.index("Copy-Item -LiteralPath $Logs") < receipt_block.index("throw 'STAGE1B6J")
+
+
+def test_50_r3h_existing_failure_artifact_uploads_all_receipt_diagnostics() -> None:
+    workflow = (ROOT / ".github/workflows/phase4c-stage1b6j-r3-openblas-runtime.yml").read_text(encoding="utf-8")
+    failure_step = workflow.split("- name: Upload package-plan failure diagnostics", 1)[1].split(
+        "- name: Upload only the fully validated runtime artifact", 1
+    )[0]
+    assert "phase4c-stage1b6j-r3-package-plan-failure-diagnostics" in failure_step
+    for path in (
+        "github_receipt_and_file_ownership.json",
+        "logs/receipt_audit.stdout.txt",
+        "logs/receipt_audit.stderr.txt",
+    ):
+        assert f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step
+    assert "installed_conda" not in failure_step
+    assert "runtime.tar.gz" not in failure_step
