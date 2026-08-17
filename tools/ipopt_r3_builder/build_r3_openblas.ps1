@@ -59,15 +59,18 @@ function Invoke-NativeCaptured {
 }
 
 function Invoke-Probe {
-    param([string]$Python, [string]$Mode, [string]$Kind, [string]$Output, [string]$Module = '')
+    param(
+        [string]$Python, [string]$Mode, [string]$Kind, [string]$Output,
+        [string]$Module = '', [switch]$AllowFailure
+    )
     $arguments = @($ProbeScript, '--kind', $Kind, '--mode', $Mode, '--output', $Output)
     if ($Module) { $arguments += @('--module', $Module) }
     if ($Module -eq 'callback_stack') { $arguments += @('--project-root', $ScientificRoot) }
     if ($Mode -in @('activated', 'relocated')) {
         $command = "call `"$ActivePrefix\Scripts\activate.bat`" && `"$Python`" " + (($arguments | ForEach-Object { '"' + ($_ -replace '"','\"') + '"' }) -join ' ')
-        return Invoke-NativeCaptured $CmdExe @('/d', '/s', '/c', $command) ($Output + '.stdout.txt') ($Output + '.stderr.txt')
+        return Invoke-NativeCaptured $CmdExe @('/d', '/s', '/c', $command) ($Output + '.stdout.txt') ($Output + '.stderr.txt') -AllowFailure:$AllowFailure
     }
-    return Invoke-NativeCaptured $Python $arguments ($Output + '.stdout.txt') ($Output + '.stderr.txt')
+    return Invoke-NativeCaptured $Python $arguments ($Output + '.stdout.txt') ($Output + '.stderr.txt') -AllowFailure:$AllowFailure
 }
 
 function Merge-Probes {
@@ -273,7 +276,30 @@ $ActivePrefix = $Candidate
 $dllPaths = @()
 foreach ($mode in @('raw', 'activated')) {
     $path = Join-Path $ProbeOutput "github_dll_$mode.json"
-    Invoke-Probe $CandidatePython $mode 'dll' $path | Out-Null
+    $dllProbeResult = Invoke-Probe $CandidatePython $mode 'dll' $path -AllowFailure
+    if ($dllProbeResult.ExitCode -ne 0) {
+        $classification = $null
+        $externalNumericalModules = $null
+        $mklOrIntelThreadModules = $null
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            try {
+                $dllDiagnostic = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+                $classification = $dllDiagnostic.classification
+                $externalNumericalModules = $dllDiagnostic.external_numerical_modules
+                $mklOrIntelThreadModules = $dllDiagnostic.mkl_or_intel_thread_modules
+            } catch {
+                Write-Output "R3 DLL-probe diagnostic parse failure: $($_.Exception.Message)"
+            }
+        }
+        $compact = [ordered]@{
+            mode = $mode
+            classification = $classification
+            external_numerical_modules = $externalNumericalModules
+            mkl_or_intel_thread_modules = $mklOrIntelThreadModules
+        }
+        Write-Output ('R3 DLL-probe rejection summary: ' + ($compact | ConvertTo-Json -Compress -Depth 20))
+        throw 'STAGE1B6J_R3_GITHUB_DLL_RESOLUTION_PROBE_REJECTED'
+    }
     $dllPaths += $path
 }
 Merge-Probes $dllPaths (Join-Path $OutputDirectory 'github_dll_resolution.json') 'STAGE1B6J_R3_GITHUB_DLL_RESOLUTION_PASS'

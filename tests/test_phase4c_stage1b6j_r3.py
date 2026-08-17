@@ -554,7 +554,7 @@ def test_32_r3e_failure_artifact_excludes_runtime_payloads() -> None:
     )[0]
     assert "runtime.tar.gz" not in failure_step
     assert "phase4c_stage1b6j_r3_scientific_payload.zip" not in failure_step
-    assert "probe_records" not in failure_step
+    assert "probe_records/github_dll_*.json" in failure_step
 
 
 def test_33_r3f_link_build_string_fetch_build_merge_retains_rich_metadata() -> None:
@@ -984,7 +984,7 @@ def test_51_r3i_existing_failure_artifact_uploads_install_transaction_diagnostic
         "logs/conda_explicit.stderr.txt",
     )
     assert all(f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step for path in required)
-    assert all(path not in failure_step for path in ("runtime.tar.gz", "phase4c_stage1b6j_r3_scientific_payload.zip", "probe_records"))
+    assert all(path not in failure_step for path in ("runtime.tar.gz", "phase4c_stage1b6j_r3_scientific_payload.zip"))
 
 
 def test_52_r3i_builder_materializes_install_evidence_at_receipt_gate() -> None:
@@ -1062,3 +1062,38 @@ def test_54_r3j_builder_cannot_run_destructive_interoperable_inventory() -> None
     receipt_block = builder[receipt_start:builder.index("$ActivePrefix =", receipt_start)]
     assert "--installed-list-output" in receipt_block
     assert receipt_block.index("--installed-list-output") < receipt_block.index("if ($ReceiptAuditResult.ExitCode -ne 0)")
+
+
+def test_55_r3k_builder_preserves_dll_probe_evidence_summarizes_and_fails_closed() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    dll_start = builder.index("$dllPaths = @()")
+    imports_start = builder.index("$importPaths = @()", dll_start)
+    dll_block = builder[dll_start:imports_start]
+
+    for required in (
+        "Invoke-Probe $CandidatePython $mode 'dll' $path -AllowFailure",
+        "if ($dllProbeResult.ExitCode -ne 0)",
+        "external_numerical_modules",
+        "mkl_or_intel_thread_modules",
+        "R3 DLL-probe rejection summary:",
+        "ConvertTo-Json -Compress",
+        "STAGE1B6J_R3_GITHUB_DLL_RESOLUTION_PROBE_REJECTED",
+    ):
+        assert required in dll_block
+    assert dll_block.index("-AllowFailure") < dll_block.index("if ($dllProbeResult.ExitCode -ne 0)")
+    assert dll_block.index("R3 DLL-probe rejection summary:") < dll_block.index("throw 'STAGE1B6J")
+
+
+def test_56_r3k_failure_artifact_uploads_dll_probe_record_and_streams() -> None:
+    workflow = (ROOT / ".github/workflows/phase4c-stage1b6j-r3-openblas-runtime.yml").read_text(encoding="utf-8")
+    failure_step = workflow.split("Upload package-plan failure diagnostics", 1)[1].split(
+        "Upload only the fully validated runtime artifact", 1
+    )[0]
+    for path in (
+        "probe_records/github_dll_*.json",
+        "probe_records/github_dll_*.json.stdout.txt",
+        "probe_records/github_dll_*.json.stderr.txt",
+    ):
+        assert f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step
+    assert "runtime.tar.gz" not in failure_step
+

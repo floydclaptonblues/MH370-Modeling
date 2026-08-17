@@ -73,6 +73,9 @@ jobs:
             phase4c_stage1b6j_r3_artifact/logs/conda_explicit.stderr.txt
             phase4c_stage1b6j_r3_artifact/logs/receipt_audit.stdout.txt
             phase4c_stage1b6j_r3_artifact/logs/receipt_audit.stderr.txt
+            phase4c_stage1b6j_r3_artifact/probe_records/github_dll_*.json
+            phase4c_stage1b6j_r3_artifact/probe_records/github_dll_*.json.stdout.txt
+            phase4c_stage1b6j_r3_artifact/probe_records/github_dll_*.json.stderr.txt
           if-no-files-found: warn
           retention-days: 30
 
