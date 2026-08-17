@@ -1097,3 +1097,24 @@ def test_56_r3k_failure_artifact_uploads_dll_probe_record_and_streams() -> None:
         assert f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step
     assert "runtime.tar.gz" not in failure_step
 
+
+def test_57_r3l_windows_module_enumerator_uses_pointer_sized_api_types() -> None:
+    source = (TOOLS / "r3_runtime_probe.py").read_text(encoding="utf-8")
+    for required in (
+        'ctypes.WinDLL("kernel32", use_last_error=True)',
+        'ctypes.WinDLL("psapi", use_last_error=True)',
+        "get_current_process.restype = wintypes.HANDLE",
+        "ctypes.POINTER(wintypes.HMODULE)",
+        "ctypes.POINTER(wintypes.DWORD)",
+        "get_module_filename.argtypes",
+        "ctypes.WinError(ctypes.get_last_error())",
+    ):
+        assert required in source
+
+    if sys.platform == "win32":
+        from r3_runtime_probe import loaded_modules
+
+        modules = loaded_modules()
+        assert modules
+        assert any(Path(path).name.lower().startswith("python") for path in modules)
+

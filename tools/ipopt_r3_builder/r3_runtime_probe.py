@@ -8,6 +8,7 @@ import math
 import os
 import platform
 import sys
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
@@ -25,16 +26,38 @@ def write_json(path: Path, value: Any) -> None:
 def loaded_modules() -> list[str]:
     if os.name != "nt":
         return []
-    process = ctypes.windll.kernel32.GetCurrentProcess()
-    handles = (ctypes.c_void_p * 4096)()
-    needed = ctypes.c_ulong()
-    if not ctypes.windll.psapi.EnumProcessModules(process, handles, ctypes.sizeof(handles), ctypes.byref(needed)):
-        raise ctypes.WinError()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = []
+    get_current_process.restype = wintypes.HANDLE
+    enum_process_modules = psapi.EnumProcessModules
+    enum_process_modules.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HMODULE),
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    enum_process_modules.restype = wintypes.BOOL
+    get_module_filename = psapi.GetModuleFileNameExW
+    get_module_filename.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HMODULE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    get_module_filename.restype = wintypes.DWORD
+
+    process = get_current_process()
+    handles = (wintypes.HMODULE * 4096)()
+    needed = wintypes.DWORD()
+    if not enum_process_modules(process, handles, ctypes.sizeof(handles), ctypes.byref(needed)):
+        raise ctypes.WinError(ctypes.get_last_error())
     paths = []
-    count = min(int(needed.value // ctypes.sizeof(ctypes.c_void_p)), len(handles))
+    count = min(int(needed.value // ctypes.sizeof(wintypes.HMODULE)), len(handles))
     for index in range(count):
         buffer = ctypes.create_unicode_buffer(32768)
-        if ctypes.windll.psapi.GetModuleFileNameExW(process, handles[index], buffer, len(buffer)):
+        if get_module_filename(process, handles[index], buffer, len(buffer)):
             paths.append(str(Path(buffer.value).resolve()))
     return sorted(set(paths), key=str.lower)
 
@@ -205,3 +228,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
