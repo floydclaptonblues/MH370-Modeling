@@ -1138,3 +1138,23 @@ def test_58_r3m_activated_probe_uses_cmd_native_raw_quoting() -> None:
     assert native_block.index("$start.Arguments = $RawCommandLine") < native_block.index("$start.ArgumentList.Add")
     assert "Invoke-NativeCaptured $CmdExe @('/d', '/s', '/c', $command)" not in probe_block
 
+
+def test_59_r3n_activated_probe_uses_trusted_conda_activation_batch() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    probe_start = builder.index("function Invoke-Probe")
+    probe_end = builder.index("function Merge-Probes", probe_start)
+    probe_block = builder[probe_start:probe_end]
+
+    for required in (
+        "Join-Path $env:CONDA 'condabin\\conda.bat'",
+        "Test-Path -LiteralPath $CondaBat -PathType Leaf",
+        "Test-R3PathUnderRoot -Path $CondaBat -Root $env:CONDA",
+        "trusted conda activation batch is unavailable",
+        'call `"$CondaBat`" activate `"$ActivePrefix`"',
+        "conda_activation_batch",
+        "expected_setup_miniconda_root = $env:CONDA",
+    ):
+        assert required in builder
+    assert "$ActivePrefix\\Scripts\\activate.bat" not in probe_block
+    assert probe_block.index('$CondaBat`" activate') < probe_block.index('$Python`"')
+

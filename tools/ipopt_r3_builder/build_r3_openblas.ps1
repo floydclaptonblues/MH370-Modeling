@@ -71,7 +71,7 @@ function Invoke-Probe {
     if ($Module) { $arguments += @('--module', $Module) }
     if ($Module -eq 'callback_stack') { $arguments += @('--project-root', $ScientificRoot) }
     if ($Mode -in @('activated', 'relocated')) {
-        $command = "call `"$ActivePrefix\Scripts\activate.bat`" && `"$Python`" " + (($arguments | ForEach-Object { '"' + ($_ -replace '"','\"') + '"' }) -join ' ')
+        $command = "call `"$CondaBat`" activate `"$ActivePrefix`" && `"$Python`" " + (($arguments | ForEach-Object { '"' + ($_ -replace '"','\"') + '"' }) -join ' ')
         $cmdCommandLine = '/d /s /c "' + $command + '"'
         return Invoke-NativeCaptured $CmdExe @() ($Output + '.stdout.txt') ($Output + '.stderr.txt') -AllowFailure:$AllowFailure -RawCommandLine $cmdCommandLine
     }
@@ -126,6 +126,11 @@ $condaResolution = Select-R3CondaExecutable `
     -CondaCommandSource ([string]$condaCommandDiagnostic.source) `
     -ExpectedRoot $env:CONDA
 $CondaExe = $condaResolution.Path
+$CondaBat = [IO.Path]::GetFullPath((Join-Path $env:CONDA 'condabin\conda.bat'))
+if (-not (Test-Path -LiteralPath $CondaBat -PathType Leaf) -or
+        -not (Test-R3PathUnderRoot -Path $CondaBat -Root $env:CONDA)) {
+    throw "STAGE1B6J_R3_BUILDER_TOOL_PROVENANCE_FAILURE: trusted conda activation batch is unavailable: $CondaBat"
+}
 
 $expectedBuilderPrefix = if ($env:CONDA_PREFIX) {
     (Resolve-Path -LiteralPath $env:CONDA_PREFIX -ErrorAction Stop).Path
@@ -169,6 +174,10 @@ $resolutionDiagnostic = [ordered]@{
     adjacent_commands = [ordered]@{
         python = $builderPythonResolution
         conda_pack = $condaPackResolution
+        conda_activation_batch = [ordered]@{
+            path = $CondaBat
+            expected_setup_miniconda_root = $env:CONDA
+        }
         cmd = $cmdResolution
         tar = $tarResolution
     }
