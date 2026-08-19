@@ -1,0 +1,78 @@
+name: Phase 4C Stage 1B.6F OpenBLAS successor
+
+"on":
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/stage1b6f-openblas-successor
+    paths:
+      - .github/workflows/build-ipopt-openblas-successor.yml
+      - tools/ipopt_openblas_successor/**
+      - tools/ipopt_r3_builder/r3_audit.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-audit-relocate:
+    name: Build and prove OpenBLAS successor without optimization
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out exact triggering commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Bootstrap isolated Miniforge builder
+        uses: conda-incubator/setup-miniconda@8ee1f361103df19b6f8c8655fd3967a8ecb162d5 # v4.0.1
+        with:
+          miniforge-version: latest
+          activate-environment: phase4c_stage1b6f_successor_builder
+          python-version: "3.12"
+          channels: conda-forge
+          channel-priority: strict
+          conda-remove-defaults: true
+          auto-activate-base: false
+
+      - name: Install builder-only conda-pack
+        shell: pwsh
+        run: >-
+          conda install --yes --name phase4c_stage1b6f_successor_builder
+          --strict-channel-priority --override-channels --channel conda-forge
+          conda-pack
+
+      - name: Build deterministic OpenBLAS successor
+        shell: pwsh
+        env:
+          PYTHONUTF8: "1"
+          PYTHONDONTWRITEBYTECODE: "1"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          NUMEXPR_NUM_THREADS: "1"
+        run: >-
+          & "${{ github.workspace }}\tools\ipopt_openblas_successor\build_successor.ps1"
+          -OutputDirectory "${{ github.workspace }}\phase4c_stage1b6f_openblas_successor_output"
+
+      - name: Upload fail-closed diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase4c-stage1b6f-openblas-successor-failure-diagnostics
+          path: |
+            phase4c_stage1b6f_openblas_successor_output/**
+            !phase4c_stage1b6f_openblas_successor_output/**/*.tar.gz
+            !phase4c_stage1b6f_openblas_successor_output/**/*.zip
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload validated immutable successor bundle
+        if: ${{ success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase4c-stage1b6f-openblas-successor-bundle
+          path: |
+            phase4c_stage1b6f_openblas_successor_output/phase4c_stage1b6f_openblas_successor_bundle.zip
+            phase4c_stage1b6f_openblas_successor_output/phase4c_stage1b6f_openblas_successor_bundle.zip.sha256.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

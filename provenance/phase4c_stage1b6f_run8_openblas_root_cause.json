@@ -1,0 +1,85 @@
+{
+  "schema_version": "1",
+  "generated_utc": "2026-08-19T02:42:26.5759390Z",
+  "classification": "ROOT_CAUSE_SPECIFICATION",
+  "specific_cause": "ROOT_CAUSE_OPENBLAS_NOT_EXPLICITLY_CONSTRAINED",
+  "run8": {
+    "workflow_run_id": 31669710941,
+    "workflow_run_number": 8,
+    "workflow_run_attempt": 1,
+    "commit_sha": "e4e355d6eb4bd43c66fd314094ee9201dfb88a34",
+    "bundle_sha256": "48fcaf2a173b7c2313371aa66b814dbf193aaf4b4074e79958047bcf3a958e1a",
+    "workflow": ".github/workflows/build-ipopt-bootstrap-bundle.yml",
+    "builder": "tools/ipopt_bundle_builder/build_bundle.ps1"
+  },
+  "dependency_control_map": {
+    "python": "tools/ipopt_bundle_builder/build_bundle.ps1: python=3.12.13",
+    "numpy": "tools/ipopt_bundle_builder/build_bundle.ps1: numpy=2.5.2",
+    "scipy": "tools/ipopt_bundle_builder/build_bundle.ps1: scipy=1.18.0",
+    "cyipopt": "tools/ipopt_bundle_builder/build_bundle.ps1: cyipopt=1.7.0",
+    "ipopt": "tools/ipopt_bundle_builder/build_bundle.ps1: ipopt=3.14.19",
+    "mumps": "tools/ipopt_bundle_builder/build_bundle.ps1: mumps-seq=5.8.2",
+    "blas": "UNCONSTRAINED_IN_RUN8",
+    "lapack": "UNCONSTRAINED_IN_RUN8",
+    "channel_policy": "conda-forge only; strict channel priority"
+  },
+  "blas_evidence": {
+    "requested": {
+      "backend": "UNSPECIFIED",
+      "libblas": null,
+      "libcblas": null,
+      "liblapack": null,
+      "libopenblas": null,
+      "mkl": null
+    },
+    "planned": {
+      "backend": "MKL",
+      "libblas": "3.11.0 9_h8455456_mkl conda-forge",
+      "libcblas": "3.11.0 9_h2a3cdd5_mkl conda-forge",
+      "liblapack": "3.11.0 9_hf9ab0e9_mkl conda-forge",
+      "libopenblas": null,
+      "mkl": "2026.1.0 hac47afa_234 conda-forge"
+    },
+    "installed": {
+      "backend": "MKL",
+      "libblas": "3.11.0 9_h8455456_mkl conda-forge",
+      "libcblas": "3.11.0 9_h2a3cdd5_mkl conda-forge",
+      "liblapack": "3.11.0 9_hf9ab0e9_mkl conda-forge",
+      "libopenblas": null,
+      "mkl": "2026.1.0 hac47afa_234 conda-forge"
+    },
+    "loaded": {
+      "backend": "MKL",
+      "openblas_dlls": [],
+      "mkl_dlls": [
+        "mkl_rt.3.dll",
+        "mkl_core.3.dll",
+        "mkl_intel_thread.3.dll",
+        "mkl_avx2.3.dll",
+        "mkl_vml_avx2.3.dll"
+      ]
+    }
+  },
+  "contamination_audit": {
+    "bundle_already_contained_mkl": true,
+    "recovery_added_mkl": false,
+    "runtime_loaded_backend_from_recovered_prefix": true,
+    "conclusion": "The divergence occurred during the upstream underconstrained Conda solve, before bundle construction or recovery."
+  },
+  "successor": {
+    "builder": "tools/ipopt_openblas_successor/build_successor.ps1",
+    "workflow": ".github/workflows/build-ipopt-openblas-successor.yml",
+    "explicit_constraints": [
+      "libblas=*=*openblas",
+      "libcblas=*=*openblas",
+      "liblapack=*=*openblas",
+      "libopenblas"
+    ],
+    "mkl_rejection_gate": [
+      "mkl",
+      "mkl-devel",
+      "mkl-include",
+      "mkl-service"
+    ]
+  }
+}
