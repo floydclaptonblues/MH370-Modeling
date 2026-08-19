@@ -1158,3 +1158,41 @@ def test_59_r3n_activated_probe_uses_trusted_conda_activation_batch() -> None:
     assert "$ActivePrefix\\Scripts\\activate.bat" not in probe_block
     assert probe_block.index('$CondaBat`" activate') < probe_block.index('$Python`"')
 
+
+def test_60_r3o_builder_preserves_import_probe_evidence_summarizes_and_fails_closed() -> None:
+    builder = (TOOLS / "build_r3_openblas.ps1").read_text(encoding="utf-8")
+    import_start = builder.index("$importPaths = @()")
+    blas_start = builder.index("$blasPaths = @()", import_start)
+    import_block = builder[import_start:blas_start]
+
+    for required in (
+        "Invoke-Probe $CandidatePython $mode 'import' $path $module -AllowFailure",
+        "if ($importProbeResult.ExitCode -ne 0)",
+        "mode = $mode",
+        "module = $module",
+        "iteration = $iteration",
+        "exit_code = $importProbeResult.ExitCode",
+        "record_preserved = Test-Path",
+        "stdout_path = $path + '.stdout.txt'",
+        "stderr_path = $path + '.stderr.txt'",
+        "stderr_tail = $stderrTail",
+        "R3 import-probe rejection summary:",
+        "STAGE1B6J_R3_GITHUB_IMPORT_SMOKE_PROBE_REJECTED",
+    ):
+        assert required in import_block
+    assert import_block.index("-AllowFailure") < import_block.index("if ($importProbeResult.ExitCode -ne 0)")
+    assert import_block.index("R3 import-probe rejection summary:") < import_block.index("throw 'STAGE1B6J")
+
+
+def test_61_r3o_failure_artifact_uploads_import_probe_records_and_streams() -> None:
+    workflow = (ROOT / ".github/workflows/phase4c-stage1b6j-r3-openblas-runtime.yml").read_text(encoding="utf-8")
+    failure_step = workflow.split("Upload package-plan failure diagnostics", 1)[1].split(
+        "Upload only the fully validated runtime artifact", 1
+    )[0]
+    for path in (
+        "probe_records/github_import_*.json",
+        "probe_records/github_import_*.json.stdout.txt",
+        "probe_records/github_import_*.json.stderr.txt",
+    ):
+        assert f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step
+    assert "runtime.tar.gz" not in failure_step

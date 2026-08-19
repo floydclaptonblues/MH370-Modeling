@@ -323,7 +323,22 @@ foreach ($mode in @('raw', 'activated')) {
     foreach ($module in @('numpy', 'scipy', 'cyipopt', 'callback_stack')) {
         for ($iteration = 1; $iteration -le 5; $iteration++) {
             $path = Join-Path $ProbeOutput "github_import_${mode}_${module}_${iteration}.json"
-            Invoke-Probe $CandidatePython $mode 'import' $path $module | Out-Null
+            $importProbeResult = Invoke-Probe $CandidatePython $mode 'import' $path $module -AllowFailure
+            if ($importProbeResult.ExitCode -ne 0) {
+                $stderrTail = @($importProbeResult.Stderr -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 8)
+                $compact = [ordered]@{
+                    mode = $mode
+                    module = $module
+                    iteration = $iteration
+                    exit_code = $importProbeResult.ExitCode
+                    record_preserved = Test-Path -LiteralPath $path -PathType Leaf
+                    stdout_path = $path + '.stdout.txt'
+                    stderr_path = $path + '.stderr.txt'
+                    stderr_tail = $stderrTail
+                }
+                Write-Output ('R3 import-probe rejection summary: ' + ($compact | ConvertTo-Json -Compress -Depth 20))
+                throw 'STAGE1B6J_R3_GITHUB_IMPORT_SMOKE_PROBE_REJECTED'
+            }
             $importPaths += $path
         }
     }
