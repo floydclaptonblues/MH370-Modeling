@@ -151,3 +151,8 @@ def test_09_mkl_include_is_part_of_plan_and_receipt_rejection_gates() -> None:
     source = (TOOLS / "successor_audit.py").read_text(encoding="utf-8")
     assert '"mkl-include"' in source
     assert 'result["passed"] = bool(result["passed"] and not prohibited)' in source
+
+
+def test_10_explicit_transaction_manifest_requests_package_hashes() -> None:
+    source = (TOOLS / "build_successor.ps1").read_text(encoding="utf-8")
+    assert "@('list', '--prefix', $Candidate, '--explicit', '--md5')" in source

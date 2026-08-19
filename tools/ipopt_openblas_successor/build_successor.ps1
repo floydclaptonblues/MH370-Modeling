@@ -135,7 +135,7 @@ $CandidatePython = Join-Path $Candidate 'python.exe'
 if (-not (Test-Path -LiteralPath $CandidatePython -PathType Leaf)) { throw 'Candidate Python is missing.' }
 
 $Explicit = Join-Path $BundleDirectory 'installed_conda_explicit.txt'
-Invoke-NativeCaptured $CondaExe @('list', '--prefix', $Candidate, '--explicit') $Explicit (Join-Path $Logs 'conda_explicit.stderr.txt') | Out-Null
+Invoke-NativeCaptured $CondaExe @('list', '--prefix', $Candidate, '--explicit', '--md5') $Explicit (Join-Path $Logs 'conda_explicit.stderr.txt') | Out-Null
 Invoke-NativeCaptured $CondaExe @('list', '--prefix', $Candidate, '--json') (Join-Path $BundleDirectory 'installed_conda_list.json') (Join-Path $Logs 'conda_list.stderr.txt') | Out-Null
 $ReceiptAudit = Join-Path $BundleDirectory 'receipt_audit.json'
 Invoke-NativeCaptured $BuilderPython @($AuditScript, 'receipts', '--plan', $Plan1, '--explicit', $Explicit, '--prefix', $Candidate, '--output', $ReceiptAudit) (Join-Path $Logs 'receipt_audit.stdout.txt') (Join-Path $Logs 'receipt_audit.stderr.txt') | Out-Null
