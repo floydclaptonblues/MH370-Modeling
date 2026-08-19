@@ -75,7 +75,7 @@ def base(mode: str) -> dict[str, Any]:
 
 def import_probe(module: str, project_root: Path | None, mode: str) -> dict[str, Any]:
     if project_root is not None:
-        for candidate in (project_root, project_root / "src"):
+        for candidate in (project_root, project_root / "src", project_root / "scripts"):
             if str(candidate) not in sys.path:
                 sys.path.insert(0, str(candidate))
     if module == "callback_stack":

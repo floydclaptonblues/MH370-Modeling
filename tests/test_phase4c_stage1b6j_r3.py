@@ -1196,3 +1196,40 @@ def test_61_r3o_failure_artifact_uploads_import_probe_records_and_streams() -> N
     ):
         assert f"phase4c_stage1b6j_r3_artifact/{path}" in failure_step
     assert "runtime.tar.gz" not in failure_step
+
+
+def test_62_r3p_callback_stack_includes_verified_nested_scripts_import_root(tmp_path: Path) -> None:
+    source = (TOOLS / "r3_runtime_probe.py").read_text(encoding="utf-8")
+    import_start = source.index("def import_probe(")
+    main_start = source.index("\ndef ", import_start + 1)
+    import_block = source[import_start:main_start]
+
+    assert 'project_root / "scripts"' in import_block
+    assert 'for candidate in (project_root, project_root / "src", project_root / "scripts")' in import_block
+    assert '__import__("scripts.run_phase4c_stage1b6j")' in import_block
+
+    protected_runner = tmp_path / "scripts" / "scripts" / "run_phase4c_stage1b6j.py"
+    protected_runner.parent.mkdir(parents=True)
+    protected_runner.write_text("CALLBACK_STACK_IMPORTED = True\n", encoding="utf-8")
+    output = tmp_path / "probe.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "r3_runtime_probe.py"),
+            "--kind",
+            "import",
+            "--mode",
+            "raw",
+            "--output",
+            str(output),
+            "--module",
+            "callback_stack",
+            "--project-root",
+            str(tmp_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text(encoding="utf-8"))["passed"] is True
